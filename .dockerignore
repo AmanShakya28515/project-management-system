@@ -1,0 +1,36 @@
+# Keep the build context small and free of local or secret files.
+# Unlike .gitignore, this also leaves out tracked files that don't belong in
+# the image (Git metadata, workflow docs, the Docker files themselves).
+
+# Version control and Claude Code workflow files
+.git
+.gitignore
+.claude/
+
+# Virtual environment, databases and caches
+.venv/
+db.sqlite3*
+*.sqlite3
+*-journal
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+
+# Environment and secret files
+.env
+.env.*
+*.local
+
+# Editors, OS and logs
+.idea/
+.vscode/
+*.log
+.DS_Store
+
+# Docker files and root-level docs (design-system/ stays: a test reads it)
+Dockerfile
+.dockerignore
+compose.yaml
+*.md

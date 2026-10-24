@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard · Project Management System{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+  <div class="flex flex-wrap items-end justify-between gap-4">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold tracking-tight wrap-anywhere sm:text-3xl">Welcome, {{ user.username }}</h1>
+      <p class="mt-1 text-muted">Your workspaces and the teams you work with.</p>
+    </div>
+    <a href="{% url 'workspaces:create' %}" class="btn-primary">{% include "partials/icons/plus.html" %}Create workspace</a>
+  </div>
+
+  <section aria-labelledby="workspaces-heading" class="card">
+    <div class="flex items-center gap-2">
+      <h2 id="workspaces-heading" class="text-lg font-semibold">Your workspaces</h2>
+      {% if workspaces %}<span class="badge badge-member">{{ workspaces|length }}</span>{% endif %}
+    </div>
+    {% if workspaces %}
+      <ul class="-mx-2 mt-4 divide-y divide-line">
+        {% for workspace in workspaces %}
+          <li>
+            <a href="{% url 'workspaces:detail' workspace.pk %}" class="flex min-h-11 items-center gap-3 rounded-lg px-2 py-3 font-medium text-link hover:bg-subtle motion-safe:transition-colors motion-safe:duration-150">
+              {% include "partials/icons/folder.html" with class="size-5 text-muted" %}
+              <span class="min-w-0 flex-1 wrap-anywhere">{{ workspace.name }}</span>
+              {% include "partials/icons/chevron-right.html" with class="size-4 text-muted" %}
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="mt-4 flex flex-col items-center rounded-xl border border-dashed border-line px-6 py-10 text-center">
+        <span class="inline-flex size-12 items-center justify-center rounded-full bg-subtle text-muted">{% include "partials/icons/folder.html" with class="size-6" %}</span>
+        <p class="mt-4 font-medium text-ink">You don't belong to any workspaces yet.</p>
+        <p class="mt-1 text-sm text-muted">Create one to start working with your team.</p>
+        <a href="{% url 'workspaces:create' %}" class="btn-primary mt-6">{% include "partials/icons/plus.html" %}Create workspace</a>
+      </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

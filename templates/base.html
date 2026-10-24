@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Project Management System{% endblock %}</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  {% comment %}
+  Design tokens and shared components. The source of truth is
+  design-system/project-management-system/MASTER.md ("Project adjustments").
+  Shared rules live in @layer components so page utilities can override them
+  (step 02 finding Q-11). Contrast pairs are checked by a test (spec 03, AC-20).
+  {% endcomment %}
+  <style type="text/tailwindcss">
+    @theme {
+      --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      --color-primary: #4F46E5;
+      --color-primary-hover: #4338CA;
+      --color-on-primary: #FFFFFF;
+      --color-link: #4338CA;
+      --color-ink: #0F172A;
+      --color-ink-soft: #334155;
+      --color-muted: #475569;
+      --color-canvas: #F8FAFC;
+      --color-surface: #FFFFFF;
+      --color-subtle: #F1F5F9;
+      --color-line: #E2E8F0;
+      --color-line-strong: #64748B;
+      --color-ring: #6366F1;
+      --color-danger: #B91C1C;
+      --color-success-fg: #065F46;
+      --color-success-bg: #ECFDF5;
+      --color-success-line: #A7F3D0;
+      --color-info-fg: #075985;
+      --color-info-bg: #F0F9FF;
+      --color-info-line: #BAE6FD;
+      --color-warning-fg: #92400E;
+      --color-warning-bg: #FFFBEB;
+      --color-warning-line: #FDE68A;
+      --color-danger-fg: #991B1B;
+      --color-danger-bg: #FEF2F2;
+      --color-danger-line: #FECACA;
+      --color-owner-fg: #3730A3;
+      --color-owner-bg: #EEF2FF;
+      --color-member-fg: #334155;
+      --color-member-bg: #F1F5F9;
+    }
+
+    @layer base {
+      body { @apply min-h-screen bg-canvas font-sans text-base leading-normal text-ink antialiased; }
+      /* outline-hidden (not outline-none) keeps a transparent outline that forced-colors / High Contrast mode makes visible, since it drops box-shadow rings (review Q-13). */
+      :where(a, button, input, select, textarea, summary):focus-visible { @apply outline-hidden ring-2 ring-ring ring-offset-2; }
+      main:focus { @apply outline-none; }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+      }
+    }
+
+    @layer components {
+      .btn-primary, .btn-secondary { @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg px-4 text-center text-sm font-semibold focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-safe:transition-colors motion-safe:duration-150; }
+      .btn-primary { @apply bg-primary text-on-primary hover:bg-primary-hover; }
+      .btn-secondary { @apply border border-line-strong bg-surface text-ink-soft hover:bg-subtle; }
+      .btn-primary[aria-current="page"] { @apply underline decoration-2 underline-offset-4; }
+
+      .card { @apply rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8; }
+
+      .link { @apply rounded-sm py-1 font-medium text-link underline-offset-4 hover:underline; }
+      .nav-link { @apply inline-flex min-h-11 items-center rounded-md px-2 text-sm font-medium text-ink-soft hover:text-link motion-safe:transition-colors motion-safe:duration-150; }
+      .nav-link[aria-current="page"] { @apply text-primary underline decoration-2 underline-offset-8; }
+      .skip-link { @apply sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-primary focus:px-4 focus:py-3 focus:text-sm focus:font-semibold focus:text-on-primary; }
+
+      .form-field { @apply space-y-1.5; }
+      .form-field label { @apply block text-sm font-medium text-ink; }
+      .form-field input:not([type="hidden"]), .form-field select, .form-field textarea { @apply block min-h-11 w-full rounded-lg border border-line-strong bg-surface px-3 text-base text-ink; }
+      .form-field textarea { @apply min-h-28 py-2; }
+      /* Same specificity as the input rule above and later in the file, so it wins (review Q-12). No ring: a component-layer ring would replace the focus ring. */
+      .form-field input[aria-invalid="true"], .form-field select[aria-invalid="true"], .form-field textarea[aria-invalid="true"] { @apply border-danger; }
+      .required-mark { @apply ml-0.5 text-danger; }
+      .form-note { @apply text-sm text-muted; }
+      .helptext { @apply text-sm text-muted; }
+      .helptext ul { @apply mt-1 list-disc space-y-0.5 pl-5; }
+      .field-errors { @apply space-y-1 text-sm font-medium text-danger; }
+      .field-errors li { @apply flex items-start gap-1.5; }
+
+      .msg { @apply flex items-start gap-3 rounded-lg border px-4 py-3 text-sm; }
+      .msg-success { @apply border-success-line bg-success-bg text-success-fg; }
+      .msg-info { @apply border-info-line bg-info-bg text-info-fg; }
+      .msg-warning { @apply border-warning-line bg-warning-bg text-warning-fg; }
+      .msg-error { @apply border-danger-line bg-danger-bg text-danger-fg; }
+
+      .badge { @apply inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium; }
+      .badge-owner { @apply bg-owner-bg text-owner-fg; }
+      .badge-member { @apply bg-member-bg text-member-fg; }
+      .badge-status-todo { @apply bg-member-bg text-member-fg; }
+      .badge-status-progress { @apply bg-info-bg text-info-fg; }
+      .badge-status-done { @apply bg-success-bg text-success-fg; }
+    }
+  </style>
+</head>
+<body>
+  <a href="#main" class="skip-link">Skip to main content</a>
+
+  <header class="border-b border-line bg-surface">
+    {% with current=request.resolver_match.view_name %}
+    <nav aria-label="Main" class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-x-6 gap-y-1 px-4 py-2 sm:px-6">
+      <a href="{% url 'core:home' %}" class="inline-flex min-h-11 items-center gap-2 rounded-md font-semibold text-ink">
+        <span class="inline-flex size-8 items-center justify-center rounded-lg bg-primary text-on-primary">{% include "partials/icons/rectangle-stack.html" with class="size-5" %}</span>
+        <span>Project Management System</span>
+      </a>
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {% if user.is_authenticated %}
+          <span class="min-w-0 max-w-full text-sm text-muted wrap-anywhere">{{ user.username }}</span>
+          <a href="{% url 'core:dashboard' %}" class="nav-link"{% if current == 'core:dashboard' %} aria-current="page"{% endif %}>Dashboard</a>
+          <form method="post" action="{% url 'accounts:logout' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn-secondary">Log out</button>
+          </form>
+        {% else %}
+          <a href="{% url 'accounts:login' %}" class="nav-link"{% if current == 'accounts:login' %} aria-current="page"{% endif %}>Log in</a>
+          <a href="{% url 'accounts:register' %}" class="btn-primary"{% if current == 'accounts:register' %} aria-current="page"{% endif %}>Register</a>
+        {% endif %}
+      </div>
+    </nav>
+    {% endwith %}
+  </header>
+
+  <main id="main" tabindex="-1" class="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-12">
+    {% if messages %}
+      <div role="status" aria-live="polite" class="mb-6">
+        <ul class="space-y-2">
+          {% for message in messages %}
+            <li class="msg msg-{{ message.level_tag }}">
+              {% if message.level_tag == 'success' %}{% include "partials/icons/check-circle.html" %}<span class="sr-only">Success:</span>
+              {% elif message.level_tag == 'warning' %}{% include "partials/icons/exclamation-triangle.html" %}<span class="sr-only">Warning:</span>
+              {% elif message.level_tag == 'error' %}{% include "partials/icons/x-circle.html" %}<span class="sr-only">Error:</span>
+              {% else %}{% include "partials/icons/information-circle.html" %}<span class="sr-only">Information:</span>{% endif %}
+              <span class="min-w-0 wrap-anywhere">{{ message }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

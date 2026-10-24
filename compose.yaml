@@ -1,0 +1,18 @@
+# Local development only. Start with: docker compose up -d
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"  # host:container, this machine only
+    volumes:
+      - .:/app               # bind mount: host code edits reload live
+      - sqlite-data:/data    # named volume: the SQLite database survives
+    environment:
+      # Development-only values. Never put a real secret in this file.
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: "django-insecure-docker-dev-only"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
+      DJANGO_SQLITE_PATH: "/data/db.sqlite3"
+
+volumes:
+  sqlite-data:

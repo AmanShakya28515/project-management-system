@@ -1,0 +1,28 @@
+{% comment %}
+Shared form contents: a single "Required field" note when any visible field
+is required, non-field errors in an error box, then each visible field via
+form_field.html. Hidden fields are rendered without a label or wrapper, but
+their errors are still shown. The first loop uses {% ifchanged %} so the
+note prints once, at the first required field, however many there are.
+Usage: {% include "partials/form_body.html" %} inside a <form> with `form` in context.
+{% endcomment %}
+{% for field in form.visible_fields %}{% if field.field.required %}{% ifchanged %}<p class="form-note"><span class="text-danger" aria-hidden="true">*</span> Required field</p>{% endifchanged %}{% endif %}{% endfor %}
+{% if form.non_field_errors %}
+  <div class="msg msg-error">
+    {% include "partials/icons/x-circle.html" %}
+    <ul class="space-y-1">
+      {% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}
+    </ul>
+  </div>
+{% endif %}
+{% for field in form.visible_fields %}
+  {% include "partials/form_field.html" %}
+{% endfor %}
+{% for field in form.hidden_fields %}
+  {{ field }}
+  {% if field.errors %}
+    <ul class="field-errors">
+      {% for error in field.errors %}<li>{{ error }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+{% endfor %}

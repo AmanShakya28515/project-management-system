@@ -1,0 +1,17 @@
+{% comment %}
+One visible field. Django adds required, aria-invalid and
+aria-describedby="<id>_helptext <id>_error" to the input, so the help text
+and error list below carry exactly those IDs (spec 03, AC-11/AC-12). The
+asterisk is hidden from screen readers: the input's required attribute
+already announces it.
+{% endcomment %}
+<div class="form-field">
+  <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required-mark" aria-hidden="true">*</span>{% endif %}</label>
+  {{ field }}
+  {% if field.help_text %}<div class="helptext" id="{{ field.auto_id }}_helptext">{{ field.help_text }}</div>{% endif %}
+  {% if field.errors %}
+    <ul class="field-errors" id="{{ field.auto_id }}_error">
+      {% for error in field.errors %}<li>{% include "partials/icons/x-circle.html" with class="mt-0.5 size-4" %}<span>{{ error }}</span></li>{% endfor %}
+    </ul>
+  {% endif %}
+</div>

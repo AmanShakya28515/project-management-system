@@ -1,0 +1,2 @@
+{# A task's status as a text badge (spec 07, AC-2/AC-11): the label always shows; colour only adds to it. Usage: {% include "tasks/partials/status_badge.html" with task=task %} #}
+<span class="badge {% if task.status == 'done' %}badge-status-done{% elif task.status == 'in_progress' %}badge-status-progress{% else %}badge-status-todo{% endif %}">{{ task.get_status_display }}</span>

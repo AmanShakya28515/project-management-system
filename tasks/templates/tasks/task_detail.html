@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}{{ task.title }} · {{ project.name }} · Project Management System{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <a href="{% url 'projects:detail' workspace.pk project.pk %}" class="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-md text-sm font-medium text-link hover:underline">{% include "partials/icons/arrow-left.html" with class="size-4" %}<span class="min-w-0">Back to <span class="wrap-anywhere">{{ project.name }}</span></span></a>
+    {% comment %}Where the task lives, three levels deep (spec 05, AC-10); plain text, the back link is the way out.{% endcomment %}
+    <p class="mt-1 text-sm text-muted"><span class="wrap-anywhere">{{ workspace.name }}</span> · <span class="wrap-anywhere">{{ project.name }}</span></p>
+    <h1 class="mt-1 text-2xl font-bold tracking-tight wrap-anywhere sm:text-3xl">{{ task.title }}</h1>
+  </div>
+
+  <section aria-labelledby="description-heading" class="card">
+    <h2 id="description-heading" class="text-lg font-semibold">Description</h2>
+    {% if task.description %}
+      {% comment %}linebreaksbr escapes the text before adding <br> (spec 05, AC-10/AC-11).{% endcomment %}
+      <p class="mt-3 max-w-prose leading-relaxed text-ink wrap-anywhere">{{ task.description|linebreaksbr }}</p>
+    {% else %}
+      <p class="mt-3 text-muted">No description</p>
+    {% endif %}
+  </section>
+
+  <div class="grid gap-6 sm:grid-cols-2">
+  <section aria-labelledby="status-heading" class="card">
+    <h2 id="status-heading" class="text-lg font-semibold">Status</h2>
+    <p class="mt-3">{% include "tasks/partials/status_badge.html" with task=task %}</p>
+    <form method="post" action="{% url 'tasks:status' workspace.pk project.pk task.pk %}" class="mt-5 space-y-4" novalidate>
+      {% csrf_token %}
+      {% include "partials/form_body.html" with form=status_form %}
+      <button type="submit" class="btn-secondary">Save status</button>
+    </form>
+  </section>
+
+  <section aria-labelledby="assignee-heading" class="card">
+    <h2 id="assignee-heading" class="text-lg font-semibold">Assignee</h2>
+    <p class="mt-3 flex min-w-0 items-center gap-3">
+      <span class="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-subtle text-muted">{% include "partials/icons/user.html" with class="size-4" %}</span>
+      {% if task.assignee %}<span class="min-w-0 font-medium text-ink wrap-anywhere">{{ task.assignee.username }}</span>{% else %}<span class="text-muted">Unassigned</span>{% endif %}
+    </p>
+    <form method="post" action="{% url 'tasks:assign' workspace.pk project.pk task.pk %}" class="mt-5 space-y-4" novalidate>
+      {% csrf_token %}
+      {% include "partials/form_body.html" with form=assign_form %}
+      <button type="submit" class="btn-secondary">Save assignee</button>
+    </form>
+  </section>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,28 @@
+# Virtual environment
+.venv/
+
+# Local SQLite databases (never tracked; see README)
+db.sqlite3*
+*.sqlite3
+*-journal
+
+# Environment and secret files
+.env
+.env.*
+*.local
+
+# Personal Claude Code settings
+.claude/settings.local.json
+
+# Python caches and tool output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+
+# Editors, OS and logs
+.idea/
+.vscode/
+*.log
+.DS_Store
