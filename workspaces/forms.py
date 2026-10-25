@@ -42,12 +42,13 @@ class AddMemberForm(forms.Form):
 
     def clean_username(self):
         username = self.cleaned_data['username']
-        # Letter case is ignored (OQ-2) and inactive accounts can't be added
-        # (OQ-3). Anything other than exactly one match counts as not found,
-        # so a Unicode case-folding clash (finding S-1) can't cause a 500.
+        # Letter case is ignored (OQ-2), using the same rule as the username
+        # constraint (plan 09 D-4), and inactive accounts can't be added
+        # (OQ-3). Anything other than exactly one match still counts as not
+        # found, as a backstop.
         matches = list(
-            get_user_model().objects.filter(
-                username__iexact=username, is_active=True
+            get_user_model().objects.filter_username_ci(username).filter(
+                is_active=True
             )[:2]
         )
         if len(matches) != 1:

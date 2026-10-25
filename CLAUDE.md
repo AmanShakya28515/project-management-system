@@ -57,6 +57,7 @@ concepts.
 | Logs | `docker compose logs -f web` |
 | Django command in the container | `docker compose exec web python manage.py <migrate\|check\|test>` |
 | Shell in the container | `docker compose exec web bash` |
+| PostgreSQL shell | `docker compose exec db psql -U pms -d pms` |
 | Reset the container database | `docker compose down -v` |
 
 There is no linter or formatter yet, on purpose (see Stack constraints).
@@ -191,9 +192,10 @@ area changes.
   chosen 5.1:* 5.1 stopped receiving security fixes in December 2025. 5.2 is
   the long-term-support release, with security support until April 2028.
   Decided in plan 01, D-2.
-- **SQLite** for local and early development. No server to run, and the database
-  is a single file. PostgreSQL arrives in a later DevOps step. To keep that easy,
-  **write only ORM code that works on any database.** No raw SQL, and nothing
+- **SQLite** for the host `.venv` workflow, and **PostgreSQL 17** in Docker
+  Compose (since step 09). SQLite needs no server, and the database is a
+  single file. **Write only ORM code that works on any database**, because
+  the same code and tests run on both. No raw SQL, and nothing
   that depends on SQLite quirks.
   - *Known SQLite limitation (accepted, plan 01 D-3):* SQLite's `LOWER()` and
     case-insensitive `LIKE`/`iexact` only fold **ASCII** letters. Usernames
@@ -217,7 +219,8 @@ area changes.
   development `Dockerfile`/`compose.yaml` (e.g. production images, extra
   services). Docker and Compose exist since step 08; changing them needs its
   own step.
-- PostgreSQL, MySQL, Redis, Celery, or any message broker or cache server
+- MySQL, Redis, Celery, or any message broker or cache server (PostgreSQL
+  exists since step 09)
 - Django REST Framework or any API layer
 - pytest, factory_boy, coverage, linters (ruff/flake8), formatters (black),
   pre-commit, type checkers
@@ -253,24 +256,61 @@ plus the reasoning behind any structural choice.*
 - **Layers:** dependencies install from `requirements.txt` in their own
   layer, before the code is copied. A new dependency still goes only
   through `requirements.txt`, then `docker compose build`.
-- **`compose.yaml` has one `web` service:**
+- **`compose.yaml` has a `web` service** (and a `db` service since step
+  09, see PostgreSQL below):
   - a bind mount of the project at `/app`, for live reload;
-  - a named volume, `sqlite-data`, at `/data`;
   - the port published as `127.0.0.1:8000:8000`, so the `DEBUG` development
     server with its dev-only key is never exposed to the local network
     (step 08 S-5). Keep the `127.0.0.1` prefix;
   - environment values labelled development-only.
-- **The container keeps its own database.**
-  - The optional `DJANGO_SQLITE_PATH` setting (default
-    `BASE_DIR/db.sqlite3`) points SQLite at `/data/db.sqlite3` in the
-    container.
-  - It's on a named volume because SQLite file locking is unreliable
-    across a Windows bind mount (plan 08, D-2).
-  - The host and container databases are deliberately separate.
+- **The container keeps its own database**, separate from the host's
+  `db.sqlite3`. Step 08 used SQLite on a named volume. Step 09 replaced it
+  with PostgreSQL. The optional `DJANGO_SQLITE_PATH` setting stays, for
+  pointing the host's SQLite file elsewhere.
 - **`.dockerignore` vs `.gitignore`:** `.dockerignore` also leaves out
   tracked files the image doesn't need (`.git`, `.claude/`, root `*.md`,
   the Docker files). `design-system/` must stay in the build context,
   because `core/tests/test_ui.py` reads `MASTER.md`.
+
+### PostgreSQL (step 09)
+- **`db` service:** `postgres:17`, pinned to the major version because it
+  fixes the on-disk format (plan 09, D-2).
+  - It keeps its data in the `postgres-data` named volume.
+  - It publishes **no port**: only Compose services reach it.
+  - A `pg_isready` health check lets `web` wait for it with
+    `depends_on: condition: service_healthy`. Starting the container isn't
+    enough: on a fresh volume, PostgreSQL needs a few seconds before it
+    accepts connections.
+  - The check runs over TCP (`pg_isready -h 127.0.0.1`), the way `web`
+    connects. During first-time setup the image runs a temporary server
+    that listens on the Unix socket only, so a socket check could pass
+    before TCP is open (step 09 Q-76). Keep the `-h`.
+- **Choosing the backend (plan 09, D-1):** `config/settings.py` uses
+  PostgreSQL when `DJANGO_DB_HOST` is set, with `DJANGO_DB_NAME`, `_USER`,
+  `_PASSWORD`, `_HOST` and `_PORT`. Otherwise it uses SQLite. Compose sets
+  host `db`, the service name; never `localhost`, which inside `web` means
+  `web` itself. The values in `compose.yaml` are dev-only.
+- **Collation `C`, ctype `en_US.utf8`** (`POSTGRES_INITDB_ARGS`, plan 09,
+  D-3).
+  - Lists sort in code-point order, exactly as on SQLite.
+  - `LOWER()` still folds all Unicode letters.
+  - Test databases inherit it from `template1`.
+  - The image's default collation would reorder names, ignoring spaces
+    and punctuation. Choosing natural-language sorting later is a product
+    decision.
+  - The initdb arguments apply only when the volume is first created.
+- **One case rule for users (S-1 fixed, plan 09, D-4):**
+  - `UserManager.filter_username_ci()` and `filter_email_ci()` compare
+    `Lower(field)` with `Lower(Value(input))`, the same database function
+    as the unique constraints, so at most one user can match.
+  - Use them, never `__iexact`, for user lookups. `__iexact` uses `UPPER()`
+    on PostgreSQL, which disagrees with `LOWER()` for e.g. `I`/`ı`.
+  - Login (`get_by_natural_key`), the registration checks and add-member
+    use them.
+  - Project names still use `__iexact`. That's harmless: it's at most
+    stricter than the constraint, and the race backstop catches the rest.
+- **Dependency:** `psycopg[binary]~=3.3.0`. The wheel bundles `libpq`, so
+  the `Dockerfile` needs no system packages.
 
 ### Apps
 - **`accounts`: identity only.** It holds the user model, registration and
@@ -456,7 +496,7 @@ plus the reasoning behind any structural choice.*
   The email constraint skips blank emails, because `createsuperuser` allows
   them. The shared messages live in `accounts/models.py`.
 - **Login ignores letter case** via `UserManager.get_by_natural_key`
-  (`username__iexact`), so the login page, the admin and `createsuperuser` all
+  (the shared `LOWER()` rule, see PostgreSQL above), so the login page, the admin and `createsuperuser` all
   behave the same. The casing chosen at registration is the one stored and
   displayed.
 - **Use Django's auth views, not custom ones.**
@@ -553,12 +593,8 @@ plus the reasoning behind any structural choice.*
 
 ### Known limitations (deliberately deferred)
 - **SQLite ignores letter case for ASCII letters only** (see Stack
-  constraints).
-- **S-1, for the PostgreSQL step:** login matching (`iexact`, which uses
-  `UPPER`) and the uniqueness constraint (`LOWER`) can disagree on some Unicode
-  letters, e.g. the dotless ı. On PostgreSQL, that could mean two near-identical
-  names and a 500 error at login. Fix it then by making the lookup use `Lower()`,
-  or by treating `MultipleObjectsReturned` as "not found".
+  constraints). This now affects only the host `.venv` workflow.
+  PostgreSQL in Compose folds all Unicode letters.
 - **S-2, for the DevOps/production step:**
   - There are no HTTPS or secure-cookie settings yet (`SESSION_COOKIE_SECURE`,
     `CSRF_COOKIE_SECURE`, `SECURE_SSL_REDIRECT`, HSTS).
@@ -595,7 +631,8 @@ plus the reasoning behind any structural choice.*
   When two inserts commit at the same moment, a lower ID can commit after a
   higher one, so a task could briefly appear one place earlier. It's rare
   and stable afterwards. SQLite serialises writes, so it can't happen
-  locally. Revisit in the PostgreSQL step.
+  there. **Reassessed and accepted in step 09 (OQ-6):** a real fix needs a
+  new ordering field, which is a product change for its own spec.
 - **Deferred to the next UI step (step 05 review):**
   - **Q-53:** extract the copied back link and list-section/empty-state
     markup into partials. The workspace page's back link has already drifted
@@ -633,6 +670,19 @@ plus the reasoning behind any structural choice.*
   `python:3.12-slim`, so a rebuild can pick up a newer patch release or a
   new Debian base. That's fine for development. Pin a tag or digest in the
   CI/CD step for reproducible builds.
+
+- **Dev database credentials are repeated (step 09 Q-78):** the database
+  name, user and password appear in both the `web` and `db` services in
+  `compose.yaml`. Change one without the other and you get an
+  authentication error. Remove the duplication in the step that moves
+  credentials out of `compose.yaml` (e.g. a git-ignored `.env`).
+
+- **The admin add-user form still uses `__iexact` (step 09 Q-77,
+  accepted):** Django's `UserAdmin` checks usernames with `UPPER()` on
+  PostgreSQL, which is only *stricter* than the `LOWER()` rule (it refuses
+  `ı` while `I` exists) and can't cause a 500. It's superuser-only.
+  Switch it to `filter_username_ci()` if the admin user forms are ever
+  customised.
 
 ### Steps landed
 - **01 — User authentication:** username/email/password sign-up (unique
@@ -680,6 +730,11 @@ plus the reasoning behind any structural choice.*
 
   The full suite passes on the host and in the container. No new tests
   (403 in total).
+- **09 — PostgreSQL in Docker Compose:** Compose runs the app on
+  PostgreSQL 17 in its own `db` service (no published port, a TCP health
+  check, data on a named volume), while the host `.venv` stays on SQLite.
+  User lookups now share one `LOWER()` case rule on both backends (S-1
+  fixed). The full suite passes on both. 8 tests (411 in total).
 
 ---
 

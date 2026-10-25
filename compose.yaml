@@ -1,4 +1,6 @@
 # Local development only. Start with: docker compose up -d
+# Every value below is a development-only placeholder. Never put a real
+# secret or production credential in this file.
 services:
   web:
     build: .
@@ -6,13 +8,38 @@ services:
       - "127.0.0.1:8000:8000"  # host:container, this machine only
     volumes:
       - .:/app               # bind mount: host code edits reload live
-      - sqlite-data:/data    # named volume: the SQLite database survives
     environment:
-      # Development-only values. Never put a real secret in this file.
       DJANGO_DEBUG: "1"
       DJANGO_SECRET_KEY: "django-insecure-docker-dev-only"
       DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
-      DJANGO_SQLITE_PATH: "/data/db.sqlite3"
+      # PostgreSQL in the db service, reached by its service name.
+      DJANGO_DB_HOST: "db"
+      DJANGO_DB_PORT: "5432"
+      DJANGO_DB_NAME: "pms"
+      DJANGO_DB_USER: "pms"
+      DJANGO_DB_PASSWORD: "pms-dev-only-password"
+    depends_on:
+      db:
+        condition: service_healthy   # wait until PostgreSQL accepts connections
+
+  db:
+    image: postgres:17       # major version pinned: it fixes the data format
+    environment:
+      POSTGRES_DB: "pms"
+      POSTGRES_USER: "pms"
+      POSTGRES_PASSWORD: "pms-dev-only-password"
+      # Code-point sort order (same as SQLite), Unicode-aware LOWER() (plan 09 D-3).
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=en_US.utf8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data   # named volume: data survives
+    healthcheck:
+      # -h 127.0.0.1 checks over TCP, as web connects. The socket alone can
+      # answer while first-time setup runs a socket-only temporary server.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U pms -d pms"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    # No ports: the database is reachable only from other Compose services.
 
 volumes:
-  sqlite-data:
+  postgres-data:

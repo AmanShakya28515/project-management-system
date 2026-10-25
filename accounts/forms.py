@@ -22,12 +22,12 @@ class RegistrationForm(UserCreationForm):
 
     def clean_username(self):
         username = self.cleaned_data.get('username')
-        if username and User.objects.filter(username__iexact=username).exists():
+        if username and User.objects.filter_username_ci(username).exists():
             raise ValidationError(USERNAME_TAKEN_MESSAGE, code='unique')
         return username
 
     def clean_email(self):
         email = self.cleaned_data.get('email', '').strip()
-        if email and User.objects.filter(email__iexact=email).exists():
+        if email and User.objects.filter_email_ci(email).exists():
             raise ValidationError(EMAIL_TAKEN_MESSAGE, code='unique')
         return email

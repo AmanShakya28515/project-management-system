@@ -1,0 +1,15 @@
+docker compose build → build the image from the Dockerfile.
+docker compose up -d → start the container(s) in the background.
+docker compose ps → see running Compose containers.
+docker compose logs -f web → watch Django logs for the web service.
+docker compose exec web bash → open a shell inside the running web container.
+docker compose exec web python manage.py migrate → run Django migrations inside the container.
+docker compose exec web python manage.py check → run Django system checks inside the container.
+docker compose exec web python manage.py test → run the test suite inside the container.
+docker compose down → stop/remove the containers but keep the named volume/database.
+docker compose down -v → stop/remove containers and delete the named volume/database.
+docker image ls → list Docker images.
+docker volume ls → list Docker volumes.
+
+======================================
+

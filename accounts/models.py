@@ -1,7 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.models import UserManager as DjangoUserManager
 from django.db import models
-from django.db.models import Q
+from django.db.models import Q, Value
 from django.db.models.functions import Lower
 
 # Shared by the model constraints and RegistrationForm so both show the same text.
@@ -10,12 +10,23 @@ EMAIL_TAKEN_MESSAGE = 'A user with that email already exists.'
 
 
 class UserManager(DjangoUserManager):
+    # Case-insensitive lookups use the same database LOWER() as the unique
+    # constraints below, on both sides, so at most one user can ever match.
+    # __iexact uses UPPER() on PostgreSQL, which can disagree with LOWER()
+    # for some letters such as the dotless ı (finding S-1, plan 09 D-4).
+    def filter_username_ci(self, username):
+        return self.alias(username_ci=Lower('username')).filter(
+            username_ci=Lower(Value(username))
+        )
+
+    def filter_email_ci(self, email):
+        return self.alias(email_ci=Lower('email')).filter(
+            email_ci=Lower(Value(email))
+        )
+
     def get_by_natural_key(self, username):
-        # Login matches usernames ignoring letter case (spec 01, AC-9). The
-        # case-insensitive unique constraint keeps this to one match on SQLite;
-        # on PostgreSQL UPPER/LOWER folding can differ (review finding S-1,
-        # deferred to the PostgreSQL step).
-        return self.get(**{f'{self.model.USERNAME_FIELD}__iexact': username})
+        # Login matches usernames ignoring letter case (spec 01, AC-9).
+        return self.filter_username_ci(username).get()
 
 
 class User(AbstractUser):
