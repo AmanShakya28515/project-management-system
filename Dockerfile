@@ -1,7 +1,9 @@
 # Development image for the Project Management System (step 08).
 # Not for production: it runs Django's development server as root.
-#python:3.12-slim is already a ready-made Docker image.
-FROM python:3.12-slim
+#python:3.12.16-slim-trixie is already a ready-made Docker image.
+# Exact Python patch and Debian release pinned (step 10, Q-74): a rebuild
+# never changes underneath us. Updating it is a deliberate one-line change.
+FROM python:3.12.16-slim-trixie
 
 # No .pyc files on the bind mount; logs appear immediately.
 ENV PYTHONDONTWRITEBYTECODE=1 \

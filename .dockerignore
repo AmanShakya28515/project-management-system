@@ -5,6 +5,7 @@
 # Version control and Claude Code workflow files
 .git
 .gitignore
+.github/
 .claude/
 
 # Virtual environment, databases and caches

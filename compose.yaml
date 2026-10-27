@@ -23,7 +23,9 @@ services:
         condition: service_healthy   # wait until PostgreSQL accepts connections
 
   db:
-    image: postgres:17       # major version pinned: it fixes the data format
+    # Exact minor and Debian release pinned (step 10). The major (17) fixes
+    # the data format; Debian's glibc supplies the LOWER() case tables.
+    image: postgres:17.11-trixie
     environment:
       POSTGRES_DB: "pms"
       POSTGRES_USER: "pms"

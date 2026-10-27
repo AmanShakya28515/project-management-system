@@ -183,7 +183,7 @@ area changes.
 
 ### Use:
 - **Python 3.12.** A stable release, fully supported by Django 5.2. It will
-  match a future `python:3.12-slim` Docker image. It must be installed
+  match the `python:3.12.x-slim` Docker image (step 08). It must be installed
   separately on the dev machine and is not installed yet as of 2026-10-01; a
   3.13 or 3.11 interpreter is **not** a substitute.
 - **Django 5.2 LTS.** Batteries included: auth, admin, ORM, migrations, forms,
@@ -215,10 +215,11 @@ area changes.
 
 ### Do NOT add without being asked:
 - React, Vue, HTMX, Alpine, or any JS framework or bundler; Node/npm of any kind
-- Kubernetes manifests, CI config, or Docker changes beyond step 08's
-  development `Dockerfile`/`compose.yaml` (e.g. production images, extra
-  services). Docker and Compose exist since step 08; changing them needs its
-  own step.
+- Kubernetes manifests, or Docker or CI changes beyond the development
+  `Dockerfile`/`compose.yaml` (step 08) and the CI workflow (step 10), e.g.
+  production images, extra services, extra CI jobs or deployment. Docker
+  and Compose exist since step 08 and CI since step 10; changing them needs
+  its own step.
 - MySQL, Redis, Celery, or any message broker or cache server (PostgreSQL
   exists since step 09)
 - Django REST Framework or any API layer
@@ -250,8 +251,8 @@ plus the reasoning behind any structural choice.*
   messages and the Tailwind CDN. App templates go in `<app>/templates/<app>/`.
 
 ### Git and Docker (step 08)
-- **The image is for development only.** `Dockerfile` (`python:3.12-slim`)
-  runs `runserver` on `0.0.0.0:8000` as root. A production image (Gunicorn,
+- **The image is for development only.** `Dockerfile`
+  (`python:3.12.16-slim-trixie`, pinned since step 10) runs `runserver` on `0.0.0.0:8000` as root. A production image (Gunicorn,
   a non-root user, hardening) is a later DevOps step.
 - **Layers:** dependencies install from `requirements.txt` in their own
   layer, before the code is copied. A new dependency still goes only
@@ -273,8 +274,9 @@ plus the reasoning behind any structural choice.*
   because `core/tests/test_ui.py` reads `MASTER.md`.
 
 ### PostgreSQL (step 09)
-- **`db` service:** `postgres:17`, pinned to the major version because it
-  fixes the on-disk format (plan 09, D-2).
+- **`db` service:** `postgres:17.11-trixie`. The major version fixes the
+  on-disk format (plan 09, D-2); the exact minor and Debian release are
+  pinned since step 10.
   - It keeps its data in the `postgres-data` named volume.
   - It publishes **no port**: only Compose services reach it.
   - A `pg_isready` health check lets `web` wait for it with
@@ -311,6 +313,33 @@ plus the reasoning behind any structural choice.*
     stricter than the constraint, and the race backstop catches the rest.
 - **Dependency:** `psycopg[binary]~=3.3.0`. The wheel bundles `libpq`, so
   the `Dockerfile` needs no system packages.
+
+### Continuous integration (step 10)
+- **GitHub Actions, one workflow** (`.github/workflows/ci.yml`). It runs on
+  a push to any branch and on pull requests into `main`. A newer push
+  cancels the older run on the same branch.
+- **Two parallel jobs, both required:**
+  - `postgres` builds the dev image and runs each check with
+    `docker compose run --rm web …`, so CI tests the real `Dockerfile` and
+    `compose.yaml`. `run` waits for the `db` health check and starts no dev
+    server.
+  - `sqlite` runs Python 3.12 on the runner, with no `DJANGO_DB_*` set, as
+    in the host `.venv`.
+- **Each check is its own step**, in the standard order (drift, `check`,
+  `test --noinput`), so a failure stops the job and the log names the step.
+  `--noinput` stops a non-interactive run from hanging on a prompt.
+- **No secrets, read-only:** `permissions: contents: read`; the only
+  database values are the dev-only ones in `compose.yaml`. Each job has a
+  15-minute limit.
+- **Everything external is pinned** (plan 10, D-1/D-2): the runner
+  (`ubuntu-24.04`), the actions (major tags), the Python and PostgreSQL
+  images (exact version plus Debian release, so glibc's case tables for
+  `LOWER()` can't change silently). Updating a pin is a deliberate,
+  one-line change. Digest or commit-hash pins and automated updates
+  (Dependabot) would be their own step.
+- **Dependencies still float within `~=`**, so a new patch release can
+  change a run without a code change (spec 10, OQ-5). A lock file would be
+  its own step.
 
 ### Apps
 - **`accounts`: identity only.** It holds the user model, registration and
@@ -665,11 +694,6 @@ plus the reasoning behind any structural choice.*
   `in_progress` and `done` appear in `Task.Status`, the check constraint and
   the badge partial. If statuses ever change, take them from one constant and
   have the model supply the badge style.
-
-- **Floating base image tag (step 08 Q-74):** the `Dockerfile` uses
-  `python:3.12-slim`, so a rebuild can pick up a newer patch release or a
-  new Debian base. That's fine for development. Pin a tag or digest in the
-  CI/CD step for reproducible builds.
 
 - **Dev database credentials are repeated (step 09 Q-78):** the database
   name, user and password appear in both the `web` and `db` services in
