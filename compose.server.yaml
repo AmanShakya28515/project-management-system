@@ -1,0 +1,62 @@
+# Server deployment (step 12): private and HTTP-only. The app listens on the
+# server's loopback and is reached through an SSH tunnel; it is not public.
+# Secrets come from an env file outside this checkout (see README).
+# Run every command with: docker compose -p pms -f compose.server.yaml ...
+name: pms
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    # Tagged with the Git revision, so the running revision is visible and
+    # the previous image stays available for recovery.
+    image: pms-web:${PMS_REVISION:?Supply PMS_REVISION}
+    restart: unless-stopped        # back up after a server reboot
+    ports:
+      - "127.0.0.1:8010:8000"      # loopback only: never public
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:?Supply DJANGO_SECRET_KEY}"
+      DJANGO_ALLOWED_HOSTS: "${DJANGO_ALLOWED_HOSTS:?Supply DJANGO_ALLOWED_HOSTS}"
+      DJANGO_DB_HOST: db
+      DJANGO_DB_PORT: "5432"
+      DJANGO_DB_NAME: "${DJANGO_DB_NAME:?Supply DJANGO_DB_NAME}"
+      DJANGO_DB_USER: "${DJANGO_DB_USER:?Supply DJANGO_DB_USER}"
+      DJANGO_DB_PASSWORD: "${DJANGO_DB_PASSWORD:?Supply DJANGO_DB_PASSWORD}"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Shared server: hard caps so this app can't starve other projects.
+    mem_limit: 512m
+    cpus: 1.0
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"            # logs can't fill the disk
+        max-file: "3"
+
+  db:
+    image: postgres:17.11-trixie   # same pin as compose.yaml
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${DJANGO_DB_NAME:?Supply DJANGO_DB_NAME}"
+      POSTGRES_USER: "${DJANGO_DB_USER:?Supply DJANGO_DB_USER}"
+      POSTGRES_PASSWORD: "${DJANGO_DB_PASSWORD:?Supply DJANGO_DB_PASSWORD}"
+      # Code-point sort order, Unicode-aware LOWER() (plan 09 D-3).
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=en_US.utf8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data   # persists across restarts
+    healthcheck:
+      # Over TCP, as web connects (step 09 Q-76).
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    mem_limit: 512m
+    cpus: 1.0
+    logging: *logging
+    # No ports: only the web container can reach the database.
+
+volumes:
+  postgres-data:
