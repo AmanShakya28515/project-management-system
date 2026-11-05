@@ -42,23 +42,23 @@ the private SSH tunnel.
 - [x] 2. Select a clean, CI-passed Git revision and manually fetch it to a
   deployment directory. Record its commit; ensure the checkout/build context
   contains no local secrets or databases.
-- [ ] 3. Add server-side Compose configuration and deployment instructions for
+- [x] 3. Add server-side Compose configuration and deployment instructions for
   production web + PostgreSQL, private loopback access, restricted secret file,
   persistent database storage and health readiness. Preserve the Step 11 image
   settings and non-root runtime. Keep local development and CI files unchanged.
-- [ ] 4. Deploy manually: build image, start database, run migrations explicitly,
+- [x] 4. Deploy manually: build image, start database, run migrations explicitly,
   start web, verify status/logs/database and HTTP through SSH tunnel. Demonstrate
   login, workspace/project/task flow, anonymous redirect, outsider 404 and CSRF.
-- [ ] 5. Demonstrate container recreation/restart persistence with a disposable
+- [x] 5. Demonstrate container recreation/restart persistence with a disposable
   record. Confirm application and database ports are private as specified.
-- [ ] 6. Demonstrate backup and recovery: create a logical PostgreSQL backup,
+- [x] 6. Demonstrate backup and recovery: create a logical PostgreSQL backup,
   transfer a protected copy off-server, restore to a disposable isolated
   database, and verify the known record without touching the live database.
 - [ ] 7. Demonstrate a manual update to another CI-passed revision, with a
   backup, image build, explicit migrations, application recreation and smoke
   checks. Record downtime and recovery limits; do not claim old-image rollback
   can reverse arbitrary schema migrations.
-- [ ] 8. Document build versus deployment, server contents, start/stop/restart,
+- [x] 8. Document build versus deployment, server contents, start/stop/restart,
   status/log inspection, revision identification, backup/restore, update steps,
   HTTP tunnel access and remaining public-exposure requirements.
 - [ ] 9. Verify locally in the standard order and record local results separately
@@ -110,6 +110,16 @@ the private SSH tunnel.
   capped at 3 × 10 MB; `db` with no ports, the TCP health check and the
   `pms_postgres-data` volume. Validated with `docker compose config`;
   missing variables are refused.
+- **Modified:**
+  - `Dockerfile.production`: removed a stray `r` line (see Test results);
+  - `README.md`: a "Server deployment (step 12)" section covering build
+    vs deployment, what lives on the server, first-time setup, the
+    `/opt/pms/dc` helper, everyday operation, tunnel access, backup,
+    restore test, the update routine with downtime and recovery limits,
+    and what remains before public exposure. Server IPs use a
+    `<server-ip>` placeholder.
+- **Server only (not in Git):** `/opt/pms/app`, `/opt/pms/dc`,
+  `/etc/pms/production.env`, `/opt/pms/backups/`, Docker packages.
 
 Expected repository changes: a deployment-specific Compose file and
 `.dockerignore`/README updates only if needed. No changes to existing development
@@ -186,6 +196,45 @@ install, as the spec's OQ-1 allows once the gap is reported and agreed.
   26.2.0, Python 3.12.16.
 - Server warning "Bake, but buildx isn't installed": harmless; Compose
   falls back to the classic builder.
+
+### 2026-11-05 — Step 4 deployed (user-run)
+- CI run 42002236579 passed on `bc7c504`; the server checkout moved there.
+- Image `pms-web:bc7c504` (271 MB on disk). `db` healthy, `5432/tcp`
+  with no host mapping.
+- `migrate --noinput`: "No migrations to apply" (already applied in the
+  user's earlier session). `check`: no issues. `check --deploy`: exactly
+  W004, W008, W012, W016, none silenced (the expected HTTPS boundary).
+- `up -d web`: `pms-web-1` on `127.0.0.1:8010->8000/tcp`.
+- **User-reported:** the browser test over the SSH tunnel works.
+  *Not pasted:* the batch 5 output (Gunicorn log lines, `ss`, the
+  200/403 `curl` codes, `docker stats`).
+- The `dc` alias was lost with each new SSH session, so a helper
+  `/opt/pms/dc` (mode 700) was added on the server: it `cd`s to the
+  checkout, sets `PMS_REVISION` from `git rev-parse --short HEAD` and runs
+  `docker compose -p pms -f compose.server.yaml --env-file …`.
+
+### 2026-11-05 — Step 5 persistence and privacy (user-run)
+- `down` removed both containers and the network; `pms_postgres-data`
+  remained; `up -d` recreated them (`db` healthy).
+- Workspace names read through the Django shell: `['workspaceTest']`
+  (created in the browser before `down`), then the same after
+  `restart`. AC-4 and AC-8 hold.
+- From the user's PC, `curl.exe -m 5 http://<server-ip>:8010/`: timed out
+  after 5 s. The app port isn't publicly reachable (AC-7).
+
+### 2026-11-05 — Step 6 backup and restore (user-run)
+- `pg_dump -Fc` through `dc exec -T db` while live:
+  `/opt/pms/backups/pms-20261105-1326.dump`, created with `umask 077`.
+- Restore test **on the server** (the user chose it over the PC option): a
+  separate `postgres:17.11-trixie` container, no ports, outside the `pms`
+  project; `pg_restore --create --no-owner --no-privileges`;
+  `select name from workspaces_workspace` → `workspaceTest` (1 row);
+  container and volume removed with `docker rm -f -v`. The live database
+  wasn't touched (AC-10).
+- Off-server copy: `scp` to the user's PC, `C:\Users\ACER\pms-backups\`,
+  43 KB, outside the project. `scp` needed the root password; the first
+  attempts failed on a placeholder, a lost variable and a mistyped
+  password.
 
 ## Review log
 _(filled in by /review)_

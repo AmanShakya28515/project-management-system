@@ -172,6 +172,170 @@ admin styling and production frontend assets still need a delivery decision.
 The two existing CI jobs remain unchanged; production-image verification is
 local in this step.
 
+## Server deployment (step 12)
+
+The production image runs on one Linux server with Docker Compose, using
+`compose.server.yaml`. It is a **private learning deployment**: plain HTTP,
+listening only on the server's loopback (`127.0.0.1:8010`), reached through
+an SSH tunnel. It is **not** ready for public users (see the end of this
+section). Every step is manual; there is no automatic deployment.
+
+**Build vs deployment:** *building* turns a Git revision into an image
+(code baked in). *Deploying* runs that image, with server-side secrets and
+a database, as containers. On the server, `dc build` builds and
+`dc up -d` deploys; CI on GitHub only tests.
+
+### What lives on the server
+| Path / object | What it is |
+|---|---|
+| `/opt/pms/app` | Git checkout of one CI-passed revision, used only as build input |
+| `/opt/pms/dc` | Helper: `docker compose -p pms -f compose.server.yaml --env-file …` |
+| `/etc/pms/production.env` | Secrets and settings, root-only (`600`), outside the checkout |
+| `/opt/pms/backups/` | Database backups, root-only |
+| Image `pms-web:<revision>` | One per deployed revision; older ones kept for recovery |
+| Containers `pms-web-1`, `pms-db-1` | The running app and PostgreSQL 17 |
+| Volume `pms_postgres-data` | The database files (persistence, **not** a backup) |
+
+The code isn't under `/var/www`: nginx never serves it, and nothing reads
+the checkout while the app runs (the image has its own copy).
+
+### First-time setup (run as root on the server)
+Docker and Compose: `apt-get install -y docker.io docker-compose-v2`
+(check first that it suits anything else on the server). Then:
+
+```bash
+mkdir -p /opt/pms && cd /opt/pms
+git clone https://github.com/AmanShakya28515/project-management-system.git app
+cd app && git checkout --detach <ci-passed-commit>
+```
+
+**Secrets** (new values for the server; never printed or copied from a PC):
+
+```bash
+mkdir -p /etc/pms && chmod 700 /etc/pms && umask 077
+F=/etc/pms/production.env
+K=$(openssl rand -base64 48 | tr -d '\n'); P=$(openssl rand -hex 24)
+printf 'DJANGO_SECRET_KEY=%s\n' "$K" > $F
+printf 'DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1\n' >> $F
+printf 'DJANGO_DB_NAME=pms\nDJANGO_DB_USER=pms\n' >> $F
+printf 'DJANGO_DB_PASSWORD=%s\n' "$P" >> $F
+unset K P; umask 022
+```
+
+**Helper** (so every command targets only this project):
+
+```bash
+F=/opt/pms/dc
+printf '#!/bin/sh\ncd /opt/pms/app || exit 1\n' > $F
+printf 'export PMS_REVISION=$(git rev-parse --short HEAD)\n' >> $F
+printf 'C="-p pms -f compose.server.yaml"\n' >> $F
+printf 'E="--env-file /etc/pms/production.env"\n' >> $F
+printf 'exec docker compose $C $E "$@"\n' >> $F
+chmod 700 $F
+```
+
+**First deployment** (migrations are always explicit, never on startup):
+
+```bash
+/opt/pms/dc build
+/opt/pms/dc up -d db
+/opt/pms/dc run --rm web python manage.py migrate --noinput
+/opt/pms/dc run --rm web python manage.py check --deploy
+/opt/pms/dc up -d web
+```
+
+### Everyday operation
+| Task | Command |
+|---|---|
+| Status | `/opt/pms/dc ps` |
+| Logs | `/opt/pms/dc logs --tail 50 web` (or `db`; add `-f` to follow) |
+| Running revision | `/opt/pms/dc images` (the `pms-web` tag) or `git -C /opt/pms/app log --oneline -1` |
+| Resource use | `docker stats --no-stream pms-web-1 pms-db-1` |
+| Stop / start | `/opt/pms/dc stop` / `/opt/pms/dc start` |
+| Restart | `/opt/pms/dc restart` |
+| Remove containers, keep data | `/opt/pms/dc down` |
+
+Both services restart by themselves after a server reboot
+(`restart: unless-stopped`). Each is capped at 512 MB RAM and 1 CPU, and
+its logs at 3 × 10 MB, because the server is shared. **Never** run
+`down -v` (it deletes the database) or server-wide commands such as
+`docker system prune` on a shared server.
+
+**Open the app** from your PC (keep this window open; `Ctrl+C` closes it):
+
+```powershell
+ssh -N -L 8010:127.0.0.1:8010 root@<server-ip>
+```
+
+Then browse to <http://localhost:8010/>. Port 8010 isn't reachable from the
+internet; only the tunnel reaches it.
+
+### Backups
+A volume survives restarts, but not a lost disk, a deleted server or a
+mistaken `down -v`. Take a backup before every update:
+
+```bash
+umask 077; mkdir -p /opt/pms/backups
+B=/opt/pms/backups/pms-$(date +%Y%m%d-%H%M).dump
+D='pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc'
+/opt/pms/dc exec -T db sh -c "$D" > $B; umask 022; ls -l $B
+```
+
+Keep a copy off the server (PowerShell, in a private folder outside the
+project): `scp "root@<server-ip>:/opt/pms/backups/*.dump" .`
+
+**Test a restore** into a throwaway database (no ports, deleted after;
+the live database is never touched):
+
+```bash
+N=pms-restore-test
+docker run -d --name $N -e POSTGRES_PASSWORD=x postgres:17.11-trixie
+until docker exec $N pg_isready -h 127.0.0.1; do sleep 1; done
+docker exec -i $N pg_restore -U postgres -d postgres \
+  --create --no-owner --no-privileges < $B
+docker exec $N psql -U postgres -d pms -c "select name from workspaces_workspace;"
+docker rm -f -v $N
+```
+
+Backups contain user data and password hashes: keep them private. There's
+no automatic schedule or retention; this is a manual, learning setup.
+
+### Updating to a new revision
+Only deploy a commit whose CI run passed.
+
+1. **Back up** (above).
+2. **Fetch and select:** `cd /opt/pms/app && git fetch && git checkout --detach <commit>`.
+3. **Build:** `/opt/pms/dc build`. The old image stays as `pms-web:<old>`.
+   Rebuilding installs the newest packages within each `~=` range, so two
+   builds of one commit needn't be byte-identical.
+4. **Migrate:** `/opt/pms/dc run --rm web python manage.py migrate --noinput`,
+   and read its output.
+5. **Recreate the app:** `/opt/pms/dc up -d web`.
+6. **Check:** `/opt/pms/dc ps`, the logs, and the app through the tunnel.
+
+**Downtime:** a few seconds while `web` is recreated (step 5). Migrations
+that change existing tables can lengthen it.
+
+**Recovery:** if the new revision misbehaves and it added **no**
+migrations, check out the old commit and run `/opt/pms/dc up -d web`; the
+old image is reused without a rebuild. If it **did** migrate, an old
+image may not work with the new schema, and old code can't safely undo
+arbitrary migrations: restore the pre-update backup into the database
+instead (stop `web` first), or fix forward with a new commit.
+
+### Before this could be public
+- **HTTPS** with a domain and a reverse proxy, plus the settings behind the
+  four `check --deploy` warnings (HSTS, HTTPS redirect, secure session and
+  CSRF cookies). None of them is suppressed.
+- **Static files:** Gunicorn doesn't serve them (the admin is unstyled),
+  and the Tailwind Play CDN isn't meant for production.
+- SSH hardening (keys instead of root passwords) and automated, monitored
+  backups.
+
+**Removing the deployment:** `/opt/pms/dc down`, then delete `/opt/pms` and
+`/etc/pms`. Delete the database too only on purpose: `docker volume rm
+pms_postgres-data`.
+
 ## Docker concepts in plain language
 
 - **Image:** a read-only package holding everything the app needs: a small
