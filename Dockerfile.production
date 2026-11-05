@@ -11,4 +11,6 @@ RUN groupadd --gid 10001 pms && useradd --uid 10001 --gid pms --no-create-home p
 COPY . .
 USER 10001:10001
 EXPOSE 8000
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--worker-class", "sync", "--preload", "--access-logfile", "-", "--error-logfile", "-"]
+# --no-control-socket: the runtime user has no home directory for
+# Gunicorn's control socket, and nothing uses it (step 12 Q-81).
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--worker-class", "sync", "--preload", "--access-logfile", "-", "--error-logfile", "-", "--no-control-socket"]

@@ -2,7 +2,7 @@
 step: 12
 slug: deployment
 spec: .claude/specs/12-deployment.md
-status: approved
+status: built
 created: 2026-10-31
 approved: 2026-10-31
 ---
@@ -54,14 +54,14 @@ the private SSH tunnel.
 - [x] 6. Demonstrate backup and recovery: create a logical PostgreSQL backup,
   transfer a protected copy off-server, restore to a disposable isolated
   database, and verify the known record without touching the live database.
-- [ ] 7. Demonstrate a manual update to another CI-passed revision, with a
+- [x] 7. Demonstrate a manual update to another CI-passed revision, with a
   backup, image build, explicit migrations, application recreation and smoke
   checks. Record downtime and recovery limits; do not claim old-image rollback
   can reverse arbitrary schema migrations.
 - [x] 8. Document build versus deployment, server contents, start/stop/restart,
   status/log inspection, revision identification, backup/restore, update steps,
   HTTP tunnel access and remaining public-exposure requirements.
-- [ ] 9. Verify locally in the standard order and record local results separately
+- [x] 9. Verify locally in the standard order and record local results separately
   from remote server evidence. Confirm CI configuration and local workflows have
   no changes. Review deployment-check output without suppressing warnings.
 
@@ -236,5 +236,110 @@ install, as the spec's OQ-1 allows once the gap is reported and agreed.
   attempts failed on a placeholder, a lost variable and a mistyped
   password.
 
+### 2026-11-05 — Step 7 manual update `bc7c504` → `7a7006a` (user-run)
+- CI run 42038655312 passed on `7a7006a` (the README documentation commit).
+- Backup first: `pms-20261105-1355.dump` (44 131 bytes, root-only).
+- `git fetch`, `git checkout --detach 7a7006a`; `dc build` took 22 s
+  (cached base image). `docker images`: `pms-web:7a7006a` (new) and
+  `pms-web:bc7c504` (kept for recovery).
+- `migrate --noinput`: "No migrations to apply."
+- `time dc up -d web`: **2.55 s** real; `web` on `pms-web:7a7006a`, `db`
+  untouched (up 37 min).
+- After: Gunicorn listening, 2 workers booted; login page **200**;
+  `['workspaceTest']` intact (AC-9).
+- **New log line:** `[ERROR] Control server error: [Errno 13] Permission
+  denied: '/home/pms'`. Gunicorn 26 tries to use the runtime user's home
+  directory, and `Dockerfile.production` creates `pms` with
+  `--no-create-home`. Serving is unaffected (200, both workers up).
+  Logged for review; not fixed mid-deployment.
+
+### 2026-11-05 — Step 9 local verification (measured by Claude)
+- Focused: `core.tests.test_production_settings`, 4 OK.
+- Drift: no changes. `check`: no issues.
+- Full suite (host SQLite): **415 OK**.
+- `git diff 8239738 HEAD` for `.github/`, `compose.yaml`, `Dockerfile`,
+  `config/settings.py`, `requirements.txt`, `compose.production.yaml` and
+  `config/settings_production.py` is empty: CI, local development and the
+  step 11 rehearsal are unchanged (AC-11). The step changed only
+  `compose.server.yaml` (new), `Dockerfile.production` (the stray-line
+  fix), `README.md`, and the spec and plan.
+- CI passed on every deployed revision: `354b031`, `bc7c504`, `7a7006a`.
+- **Remote vs local evidence:** everything under steps 1–7 is
+  user-reported from the server; this section is measured locally.
+
 ## Review log
-_(filled in by /review)_
+
+### 2026-11-05: review of the build
+**Scope:** `git diff 8239738 HEAD` (matching "Files changed"), plus the
+server-only items recorded in Test results. Done inline, with no
+specialist reviewer: no app code, auth or access control changed. The
+secrets handling (a root-only env file outside the checkout, values never
+printed) and network exposure (loopback-only port, no database port,
+tunnel access) were checked directly.
+
+The ACs are met as recorded:
+- AC-1 to AC-5, AC-7 to AC-10: user-reported server evidence.
+- AC-11: measured locally.
+- AC-12: the README section.
+- AC-6 partly: login and the workspace/project/task flow, the anonymous
+  redirect and the outsider 404 are user-reported; the batch 5 output with
+  the CSRF `403` and the `ss` loopback line wasn't pasted. The loopback
+  binding is still shown by `dc ps` (`127.0.0.1:8010->8000/tcp`) and by the
+  PC-side timeout.
+
+- **Q-81 — Medium — fixed (retest).** `Dockerfile.production:10` creates `pms` with
+  `--no-create-home`, and Gunicorn 26 then logs `[ERROR] Control server
+  error: [Errno 13] Permission denied: '/home/pms'` at every start.
+  Serving is unaffected (200, both workers up), but a permanent ERROR line
+  hides real errors and will raise false alarms once monitoring arrives.
+  *Fix:* check Gunicorn 26's option for its control server (disable it,
+  or point it at a writable path such as `/tmp`), or give `pms` a home
+  directory it owns. Then rebuild and confirm a clean start log on the
+  server.
+- **Q-82 — Medium — open (suggest defer).** `.github/workflows/ci.yml`
+  never builds `Dockerfile.production`, so the stray `r` (fixed in
+  `bc7c504`) passed CI and broke only on the server. Any future break in
+  the production image will do the same. *Fix:* a CI step that builds
+  the production image. The spec puts CI changes out of scope, so this
+  belongs in the next CI or CD step.
+- **Q-83 — Low — open.** `compose.server.yaml:15,41`: after a server
+  reboot, Docker restarts both containers itself and doesn't wait for
+  `depends_on: service_healthy`, so the first requests can fail for a few
+  seconds while PostgreSQL starts. It recovers by itself (Django connects
+  per request). Accept; recheck if startup ever fails.
+- **Q-84 — Low — open.** The `postgres:17.11-trixie` pin now appears in
+  three files (`compose.yaml`, `compose.production.yaml`,
+  `compose.server.yaml`), and the Python pin in two Dockerfiles. Updating
+  one and missing another would split the environments. *Fix:* record it
+  in CLAUDE.md's pin note at `/done`.
+
+**Not findings, recorded for /done:**
+- Root SSH with a password (fail2ban active) is how the operator reaches
+  the server. It meets AC-7 ("restricted to the operator"); keys are listed
+  in the README as hardening before public exposure.
+- Backups accumulate in `/opt/pms/backups` with no retention; this is
+  documented as manual.
+
+**Result:** no High findings. Q-81 is worth fixing before closing: it's
+small, and a clean log matters for the monitoring step. Q-82 fits a
+future CI step.
+
+### 2026-11-05: retest (Q-81 only)
+- **Q-81 — fixed locally; server rollout pending.**
+  - **Cause:** Gunicorn 26 creates a control socket for its `gunicornc`
+    admin tool, at `$XDG_RUNTIME_DIR/gunicorn.ctl` or else
+    `~/.gunicorn/gunicorn.ctl` (read from `gunicorn/config.py` in the
+    image). `pms` has no home directory.
+  - **Fix:** `--no-control-socket` added to the `CMD` in
+    `Dockerfile.production`, with a short comment. Nothing uses the socket,
+    so disabling it also drops an unused admin interface. It's
+    Gunicorn's own documented option (`ControlSocketDisable`).
+  - **Measured locally** (throwaway production values, no database): the
+    old image's start log has the `Control server error … '/home/pms'`
+    line; the fixed image shows the same Listening/Booting lines and
+    **0** error lines. The test images, containers and values file were
+    removed.
+  - **Not re-run:** the test suite. Only the Gunicorn command line
+    changed, no Python, settings or templates; 415/415 from step 9 stands.
+  - **Server:** to be rolled out through the documented update routine
+    once the fix commit passes CI.
