@@ -39,7 +39,7 @@ the private SSH tunnel.
   Compose versions/availability, access method and available persistent storage.
   Do not install, upgrade, provision or purchase anything until gaps are reported
   and the user agrees on next steps.
-- [ ] 2. Select a clean, CI-passed Git revision and manually fetch it to a
+- [x] 2. Select a clean, CI-passed Git revision and manually fetch it to a
   deployment directory. Record its commit; ensure the checkout/build context
   contains no local secrets or databases.
 - [ ] 3. Add server-side Compose configuration and deployment instructions for
@@ -163,6 +163,29 @@ Our app port must avoid the ports above and stay on `127.0.0.1`.
 
 **Deviation:** Docker was missing, so plan step 1 was extended with this
 install, as the spec's OQ-1 allows once the gap is reported and agreed.
+
+### 2026-11-05 — Step 2 code on the server (user-run)
+- CI run 41995285102 passed on `354b031` before fetching.
+- Git 2.43.0; cloned the public repository to `/opt/pms/app` (no
+  credentials); `git checkout --detach 354b031`; `git status` clean.
+- The checkout holds only tracked files: no `.env*`, no database file.
+
+### 2026-11-05 — Step 4 first build failed: stray character (fixed)
+- Secrets file created on the server (user-run): `/etc/pms/production.env`,
+  `-rw------- root root`, five names listed, values never printed.
+- `dc build` on the server failed: `dockerfile parse error on line 15:
+  unknown instruction: r`. `Dockerfile.production` had a stray `r` line
+  after `CMD`, committed in `8239738`. Claude made that commit and missed
+  the line when reading the file. It appeared after step 11's rehearsal
+  passed.
+- **Why CI didn't catch it:** CI builds only the development `Dockerfile`,
+  never `Dockerfile.production` (step 11 kept production checks local).
+  Noted for review.
+- **Fix:** removed the line. Locally, `docker build -f
+  Dockerfile.production` succeeds: runs as `uid=10001(pms)`, Gunicorn
+  26.2.0, Python 3.12.16.
+- Server warning "Bake, but buildx isn't installed": harmless; Compose
+  falls back to the classic builder.
 
 ## Review log
 _(filled in by /review)_
