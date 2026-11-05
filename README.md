@@ -92,6 +92,86 @@ The database has no port on your machine on purpose. Reach it through the
   its data wasn't moved. Delete it with
   `docker volume rm project_management_system_sqlite-data`.
 
+## Production image rehearsal (step 11)
+
+The existing host and `docker compose` workflows above remain development
+workflows. This separate image packages code for later deployment. It is a
+local HTTP rehearsal only: **do not expose it publicly yet**. HTTPS/security
+configuration and static asset delivery (including admin CSS and replacing
+Tailwind Play CDN) remain for a later approved step.
+
+- **Gunicorn** is the server process that runs Django in production. Version
+  26.2.0 is pinned in production-only requirements, based on its
+  [published release](https://pypi.org/project/gunicorn/26.2.0/).
+  It uses two sync workers, with access/error logs in the container output.
+- **Non-root** means the server runs as user 10001, without administrator
+  privileges. Application code is owned by root and read by this user.
+- **Baked-in code** means the image contains the application. There is no host
+  source mount or live reload; rebuild after code/dependency changes.
+- **DEBUG off** means errors use generic responses. Production settings reject
+  attempts to enable debugging and refuse missing or unsafe configuration.
+
+Create `.env.production.local` once in the project root. It is ignored by Git
+and excluded from both images. Generate two distinct random values with the
+host virtualenv command below; use one for the secret key and one for the
+database password. Keep these values private and do not paste them into Git.
+
+```powershell
+.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(64))"
+```
+
+The file needs these keys (replace angle-bracket instructions with generated
+values; do not copy the instructions as credentials):
+
+```dotenv
+DJANGO_SECRET_KEY=<generated random key>
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
+DJANGO_DB_NAME=pms_rehearsal
+DJANGO_DB_USER=pms_rehearsal
+DJANGO_DB_PASSWORD=<different generated random password>
+DJANGO_DEBUG=0
+```
+
+Run from PowerShell. Always include the separate project name and file, so the
+rehearsal has its own network and database volume. It publishes only port 8001
+on localhost, leaving development port 8000 alone.
+
+```powershell
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local build
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local up -d db
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local run --rm web python manage.py migrate --noinput
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local run --rm web python manage.py check
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local run --rm web python manage.py check --deploy
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local up -d web
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local logs -f web
+# Ctrl+C stops following logs. Open http://localhost:8001/
+docker compose -p pms-production -f compose.production.yaml --env-file .env.production.local down
+```
+
+Migrations are an explicit command, never part of server startup. `down` keeps
+the rehearsal data; adding `-v` **deletes its database volume and all data**.
+Database name/user/password initialise a fresh volume only; editing the file
+does not change an existing database account. Do not print resolved Compose
+configuration or commit the runtime file because it contains credentials.
+
+The image selects `config.settings_production` for Gunicorn and management
+commands. Outside this rehearsal Compose file, supply `DJANGO_DB_HOST` and
+optionally `DJANGO_DB_PORT` (default 5432) as well as the required variables
+above. Compose supplies host `db` and port 5432. Production never falls back
+to SQLite. Known development secrets/passwords, weak secret keys, wildcard
+allowed hosts and invalid database ports are rejected without displaying values.
+Keep the Python/PostgreSQL image pins aligned in both Docker/Compose variants.
+
+Deployment checks intentionally report the remaining local HTTP limitations:
+`security.W004` (HSTS), `security.W008` (HTTPS redirect), `security.W012`
+(secure session cookie) and `security.W016` (secure CSRF cookie). These are
+not suppressed. Resolve them with the actual HTTPS deployment design before
+public exposure; enabling them blindly would break this local HTTP rehearsal.
+Investigate any additional warning. Gunicorn does not serve Django static files;
+admin styling and production frontend assets still need a delivery decision.
+The two existing CI jobs remain unchanged; production-image verification is
+local in this step.
+
 ## Docker concepts in plain language
 
 - **Image:** a read-only package holding everything the app needs: a small

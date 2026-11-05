@@ -1,0 +1,15 @@
+# Deployment runtime; the existing Dockerfile remains development-only.
+FROM python:3.12.16-slim-trixie
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DJANGO_SETTINGS_MODULE=config.settings_production \
+    DJANGO_DEBUG=0
+WORKDIR /app
+COPY requirements.txt requirements.production.txt ./
+RUN pip install --no-cache-dir -r requirements.production.txt
+RUN groupadd --gid 10001 pms && useradd --uid 10001 --gid pms --no-create-home pms
+COPY . .
+USER 10001:10001
+EXPOSE 8000
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--worker-class", "sync", "--preload", "--access-logfile", "-", "--error-logfile", "-"]
+r 

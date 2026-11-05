@@ -211,15 +211,15 @@ area changes.
 - **Django's built-in test framework** (`django.test.TestCase`, `manage.py test`).
   Nothing to install, and it is what the docs and the test runner already use.
 - **`requirements.txt`** for dependencies. It is the simplest thing that Docker
-  and CI can consume later.
+  and CI can consume later. Production-only requirements (step 11) include this
+  file plus Gunicorn; keep Gunicorn out of the Windows development virtualenv.
 
 ### Do NOT add without being asked:
 - React, Vue, HTMX, Alpine, or any JS framework or bundler; Node/npm of any kind
-- Kubernetes manifests, or Docker or CI changes beyond the development
-  `Dockerfile`/`compose.yaml` (step 08) and the CI workflow (step 10), e.g.
-  production images, extra services, extra CI jobs or deployment. Docker
-  and Compose exist since step 08 and CI since step 10; changing them needs
-  its own step.
+- Kubernetes manifests, or Docker or CI changes beyond the approved development
+  setup (step 08), CI workflow (step 10) and production image/local rehearsal
+  (step 11), e.g. extra services, extra CI jobs, image publishing or deployment.
+  Further infrastructure changes need their own step.
 - MySQL, Redis, Celery, or any message broker or cache server (PostgreSQL
   exists since step 09)
 - Django REST Framework or any API layer
@@ -252,8 +252,8 @@ plus the reasoning behind any structural choice.*
 
 ### Git and Docker (step 08)
 - **The image is for development only.** `Dockerfile`
-  (`python:3.12.16-slim-trixie`, pinned since step 10) runs `runserver` on `0.0.0.0:8000` as root. A production image (Gunicorn,
-  a non-root user, hardening) is a later DevOps step.
+  (`python:3.12.16-slim-trixie`, pinned since step 10) runs `runserver` on
+  `0.0.0.0:8000` as root. Step 11 adds a separate production image below.
 - **Layers:** dependencies install from `requirements.txt` in their own
   layer, before the code is copied. A new dependency still goes only
   through `requirements.txt`, then `docker compose build`.
@@ -272,6 +272,26 @@ plus the reasoning behind any structural choice.*
   tracked files the image doesn't need (`.git`, `.claude/`, root `*.md`,
   the Docker files). `design-system/` must stay in the build context,
   because `core/tests/test_ui.py` reads `MASTER.md`.
+
+### Production image (step 11)
+- `Dockerfile.production` uses the same pinned Python base, code baked into
+  the image, root-owned application files and runtime UID/GID 10001. Gunicorn
+  26.2.0 runs directly with two sync workers, preloading and stdout/stderr logs.
+  `requirements.production.txt` includes base requirements plus Gunicorn only;
+  development Docker/Compose and CI jobs remain unchanged.
+- The image selects `config.settings_production` for both server and management
+  commands. It reuses base settings but enforces DEBUG off, explicit strong
+  secrets/hosts and PostgreSQL configuration, rejecting development credentials,
+  wildcard hosts and invalid ports. No production SQLite fallback.
+- `compose.production.yaml` is a **local rehearsal**, not public deployment.
+  Always use project `pms-production` and the explicit file/env-file commands
+  in README: separate network/volume, no source mount, localhost port 8001,
+  no database host port. Existing PostgreSQL pin, collation and TCP readiness
+  pattern apply. Keep pins aligned in both variants.
+- `.env.production.local` supplies generated runtime secrets and is ignored by
+  Git and Docker. Never pass secrets into image builds. Migrations are explicit,
+  never part of server startup. Production-image checks are local; existing CI
+  still checks development PostgreSQL and host SQLite.
 
 ### PostgreSQL (step 09)
 - **`db` service:** `postgres:17.11-trixie`. The major version fixes the
@@ -624,10 +644,13 @@ plus the reasoning behind any structural choice.*
 - **SQLite ignores letter case for ASCII letters only** (see Stack
   constraints). This now affects only the host `.venv` workflow.
   PostgreSQL in Compose folds all Unicode letters.
-- **S-2, for the DevOps/production step:**
-  - There are no HTTPS or secure-cookie settings yet (`SESSION_COOKIE_SECURE`,
-    `CSRF_COOKIE_SECURE`, `SECURE_SSL_REDIRECT`, HSTS).
-  - The app should refuse to start with `DEBUG` off and the fallback secret key.
+- **S-2, remaining public-deployment work (step 11 boundary):** production
+  settings now reject fallback/weak secrets and debug enablement. HTTPS and
+  secure-cookie configuration still need the actual deployment design:
+  `check --deploy` reports W004 (HSTS), W008 (HTTPS redirect), W012 (secure
+  session cookie), W016 (secure CSRF cookie), none suppressed. Static delivery,
+  including admin assets and replacing Tailwind Play CDN, also remains deferred.
+  The production image's local HTTP rehearsal must not be exposed publicly yet.
 - **S-3, accepted (step 02 product behaviour):**
   - An owner can add any active user without that user agreeing, and the
     user can't leave. The workspace name then appears on their dashboard.
@@ -701,6 +724,11 @@ plus the reasoning behind any structural choice.*
   authentication error. Remove the duplication in the step that moves
   credentials out of `compose.yaml` (e.g. a git-ignored `.env`).
 
+- **CI cancels superseded runs on `main` too (step 10 Q-80):** two quick
+  pushes to `main` leave the older commit's run cancelled, with no result.
+  Fine for CI alone. The deployment step must decide whether every `main`
+  commit needs a finished run (e.g. cancel only on other branches).
+
 - **The admin add-user form still uses `__iexact` (step 09 Q-77,
   accepted):** Django's `UserAdmin` checks usernames with `UPPER()` on
   PostgreSQL, which is only *stricter* than the `LOWER()` rule (it refuses
@@ -759,6 +787,17 @@ plus the reasoning behind any structural choice.*
   check, data on a named volume), while the host `.venv` stays on SQLite.
   User lookups now share one `LOWER()` case rule on both backends (S-1
   fixed). The full suite passes on both. 8 tests (411 in total).
+- **10 — Continuous integration:** GitHub Actions runs migration drift,
+  `check` and the full suite on every push and on pull requests into
+  `main`, in two parallel jobs (PostgreSQL through the real Compose setup,
+  SQLite on Python 3.12), with no secrets and every external version
+  pinned (Q-74 settled). A deliberate failure was shown to turn the run
+  red. No new tests (411 in total).
+- **11 — Production image:** separate Gunicorn/non-root image with baked-in code,
+  validated production environment settings and an isolated localhost PostgreSQL
+  rehearsal; development and CI unchanged. Four new tests (415 total), passing
+  on host SQLite, development PostgreSQL and production PostgreSQL; HTTPS/static
+  delivery remain for deployment.
 
 ---
 

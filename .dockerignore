@@ -32,6 +32,8 @@ htmlcov/
 
 # Docker files and root-level docs (design-system/ stays: a test reads it)
 Dockerfile
+Dockerfile.production
 .dockerignore
 compose.yaml
+compose.production.yaml
 *.md
