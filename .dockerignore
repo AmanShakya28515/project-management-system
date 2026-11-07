@@ -36,4 +36,5 @@ Dockerfile.production
 .dockerignore
 compose.yaml
 compose.production.yaml
+compose.server.yaml
 *.md

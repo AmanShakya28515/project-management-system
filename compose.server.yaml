@@ -2,16 +2,17 @@
 # server's loopback and is reached through an SSH tunnel; it is not public.
 # Secrets come from an env file outside this checkout (see README).
 # Run every command with: docker compose -p pms -f compose.server.yaml ...
+# Since step 13 the server never builds: CI builds and verifies the image
+# and publishes it for main; the server pulls it (`dc pull web`).
 name: pms
 
 services:
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile.production
-    # Tagged with the Git revision, so the running revision is visible and
-    # the previous image stays available for recovery.
-    image: pms-web:${PMS_REVISION:?Supply PMS_REVISION}
+    # The image CI verified, tagged with the Git revision, so the running
+    # revision is visible and the previous image stays for recovery. No
+    # build section on purpose: a missing image is an error, never a
+    # silent, untested build on the server.
+    image: ghcr.io/amanshakya28515/pms-web:${PMS_REVISION:?Supply PMS_REVISION}
     restart: unless-stopped        # back up after a server reboot
     ports:
       - "127.0.0.1:8010:8000"      # loopback only: never public

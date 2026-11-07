@@ -1,7 +1,9 @@
-# Continuous integration (step 10): on every push, run the same checks we
-# run locally, in CLAUDE.md's standard order: migration drift, system
-# check, full test suite. Two jobs run in parallel, one per database, and
-# the run passes only if both pass.
+# Continuous integration (step 10) and image publishing (step 13).
+# On every push, run the same checks we run locally, in CLAUDE.md's
+# standard order (migration drift, system check, full test suite), one job
+# per database, and build and verify the production image. On main only,
+# when all three jobs pass, publish that verified image to GitHub
+# Container Registry. Nothing here deploys: the server pulls by hand.
 name: CI
 
 # Triggers: a push to any branch ('**' leaves out tags), and pull requests
@@ -12,12 +14,15 @@ on:
   pull_request:
     branches: [main]
 
-# A newer push to the same branch cancels the older, still-running run.
+# On other branches, a newer push cancels the older, still-running run.
+# On main, every commit gets its own group, so every run finishes and can
+# publish its image (step 13, Q-80).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# Least privilege: the workflow only reads the code. It uses no secrets.
+# Least privilege: by default jobs only read the code. Only the publish job
+# may write packages. No stored secrets; publish uses the run's own token.
 permissions:
   contents: read
 
@@ -82,3 +87,157 @@ jobs:
 
       - name: Test suite
         run: python manage.py test --noinput
+
+  # The production image (step 13): built from Dockerfile.production and
+  # verified with the server's own compose.server.yaml, so CI tests exactly
+  # what the server will run.
+  production:
+    name: Production image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      # Tagged with the commit's 7-character revision, as on the server.
+      - name: Name the image
+        id: name
+        run: |
+          REV="${GITHUB_SHA::7}"
+          IMAGE="ghcr.io/amanshakya28515/pms-web:$REV"
+          echo "PMS_REVISION=$REV" >> "$GITHUB_ENV"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      # The source label links the published package to this repository.
+      - name: Build the production image
+        run: >
+          docker build -f Dockerfile.production
+          --label org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          -t "$IMAGE" .
+
+      # Throwaway secrets for this run only: generated here, masked, never
+      # printed, gone with the runner. Not a stored GitHub secret.
+      - name: Create a throwaway env file
+        run: |
+          gen() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
+          KEY=$(gen 64)
+          PASS=$(gen 32)
+          echo "::add-mask::$KEY"
+          echo "::add-mask::$PASS"
+          ENV_FILE="$RUNNER_TEMP/ci.env"
+          printf '%s\n' "DJANGO_SECRET_KEY=$KEY" \
+            "DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1" \
+            "DJANGO_DB_NAME=pms" "DJANGO_DB_USER=pms" \
+            "DJANGO_DB_PASSWORD=$PASS" > "$ENV_FILE"
+          echo "DC=docker compose -p pms -f compose.server.yaml --env-file $ENV_FILE" >> "$GITHUB_ENV"
+
+      # The image already exists locally, so Compose uses it (no pull).
+      - name: Start the database
+        run: $DC up -d --wait db
+
+      - name: Migrations
+        run: $DC run --rm web python manage.py migrate --noinput
+
+      # Exactly the four known HTTPS warnings (S-2), and nothing else.
+      - name: Deployment check
+        run: |
+          OUT=$($DC run --rm web python manage.py check --deploy 2>&1)
+          echo "$OUT"
+          IDS=$(grep -o 'security\.W[0-9]*' <<<"$OUT" | sort -u | tr '\n' ' ')
+          test "$IDS" = "security.W004 security.W008 security.W012 security.W016 "
+          grep -q 'identified 4 issues' <<<"$OUT"
+
+      - name: Start the app and wait for the login page
+        run: |
+          $DC up -d web
+          for i in $(seq 30); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              http://127.0.0.1:8010/accounts/login/ || true)
+            [ "$CODE" = 200 ] && break
+            sleep 1
+          done
+          echo "Login page: $CODE"
+          test "$CODE" = 200
+
+      - name: Runs as the non-root user
+        run: test "$($DC exec -T web id -u)" = 10001
+
+      - name: No ERROR in the start log
+        run: |
+          $DC logs web
+          if $DC logs web | grep -q ERROR; then exit 1; fi
+
+      # No secret names in the image's settings or history, and no env
+      # file inside /app (secrets only ever come from the server's file).
+      - name: No secrets in the image
+        run: |
+          META=$(docker image inspect "$IMAGE"; docker history --no-trunc "$IMAGE")
+          if grep -qE 'DJANGO_SECRET_KEY|DJANGO_DB_PASSWORD' <<<"$META"; then
+            echo "A secret name appears in the image metadata"; exit 1
+          fi
+          FOUND=$(docker run --rm --entrypoint find "$IMAGE" /app \
+            -name '.env*' -o -name '*.local')
+          test -z "$FOUND"
+
+      # main only: hand the verified image to the publish job.
+      - name: Save the verified image
+        if: env.PUBLISH == 'true'
+        run: docker save "$IMAGE" | gzip > "$RUNNER_TEMP/pms-web.tar.gz"
+
+      - name: Upload the verified image
+        if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pms-web-image
+          path: ${{ runner.temp }}/pms-web.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+      - name: Show the logs
+        if: failure() && env.DC != ''
+        run: $DC logs
+
+      - name: Remove containers and the CI database volume
+        if: always() && env.DC != ''
+        run: $DC down -v
+
+  # Publish (step 13): only on main, only when all three jobs passed. It
+  # pushes the very image the production job verified; it never rebuilds.
+  publish:
+    name: Publish the image
+    needs: [postgres, sqlite, production]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.production.outputs.image }}
+    steps:
+      - name: Download the verified image
+        uses: actions/download-artifact@v8
+        with:
+          name: pms-web-image
+          path: ${{ runner.temp }}
+
+      - name: Load it
+        run: gunzip -c "$RUNNER_TEMP/pms-web.tar.gz" | docker load
+
+      # The run's own short-lived token; nothing stored.
+      - name: Log in to GitHub Container Registry
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push
+        run: docker push "$IMAGE"
+
+      - name: Log out
+        if: always()
+        run: docker logout ghcr.io

@@ -182,17 +182,19 @@ section). Every step is manual; there is no automatic deployment.
 
 **Build vs deployment:** *building* turns a Git revision into an image
 (code baked in). *Deploying* runs that image, with server-side secrets and
-a database, as containers. On the server, `dc build` builds and
-`dc up -d` deploys; CI on GitHub only tests.
+a database, as containers. Since step 13, **CI builds** the image once,
+verifies it and, for `main`, publishes it to GitHub Container Registry
+(see Continuous integration). **The server only pulls** that exact image
+(`dc pull web`) and runs it (`dc up -d`); it never builds.
 
 ### What lives on the server
 | Path / object | What it is |
 |---|---|
-| `/opt/pms/app` | Git checkout of one CI-passed revision, used only as build input |
+| `/opt/pms/app` | Git checkout of one CI-passed revision: supplies `compose.server.yaml` and the revision to pull |
 | `/opt/pms/dc` | Helper: `docker compose -p pms -f compose.server.yaml --env-file …` |
 | `/etc/pms/production.env` | Secrets and settings, root-only (`600`), outside the checkout |
 | `/opt/pms/backups/` | Database backups, root-only |
-| Image `pms-web:<revision>` | One per deployed revision; older ones kept for recovery |
+| Image `ghcr.io/amanshakya28515/pms-web:<revision>` | Pulled from the registry, one per deployed revision; older ones (and step 12's local `pms-web:<revision>`) kept for recovery |
 | Containers `pms-web-1`, `pms-db-1` | The running app and PostgreSQL 17 |
 | Volume `pms_postgres-data` | The database files (persistence, **not** a backup) |
 
@@ -237,7 +239,7 @@ chmod 700 $F
 **First deployment** (migrations are always explicit, never on startup):
 
 ```bash
-/opt/pms/dc build
+/opt/pms/dc pull web
 /opt/pms/dc up -d db
 /opt/pms/dc run --rm web python manage.py migrate --noinput
 /opt/pms/dc run --rm web python manage.py check --deploy
@@ -301,13 +303,13 @@ Backups contain user data and password hashes: keep them private. There's
 no automatic schedule or retention; this is a manual, learning setup.
 
 ### Updating to a new revision
-Only deploy a commit whose CI run passed.
+Only deploy a commit on `main` whose CI run passed, so its image is published.
 
 1. **Back up** (above).
 2. **Fetch and select:** `cd /opt/pms/app && git fetch && git checkout --detach <commit>`.
-3. **Build:** `/opt/pms/dc build`. The old image stays as `pms-web:<old>`.
-   Rebuilding installs the newest packages within each `~=` range, so two
-   builds of one commit needn't be byte-identical.
+3. **Pull:** `/opt/pms/dc pull web` downloads the image CI verified for
+   that commit. Nothing is built on the server. The old image stays for
+   recovery.
 4. **Migrate:** `/opt/pms/dc run --rm web python manage.py migrate --noinput`,
    and read its output.
 5. **Recreate the app:** `/opt/pms/dc up -d web`.
@@ -316,9 +318,19 @@ Only deploy a commit whose CI run passed.
 **Downtime:** a few seconds while `web` is recreated (step 5). Migrations
 that change existing tables can lengthen it.
 
+**No published image for this revision** (`pull` says "not found" or
+"manifest unknown"): its CI run failed, is still running, or the commit
+isn't on `main`. Check the Actions tab, fix and push, then deploy the new
+revision. Never build on the server instead. "unauthorized" means the
+package isn't public yet (see Continuous integration). The tag is the
+7-character revision; if `git rev-parse --short` ever prints more, use
+`--short=7` in the helper.
+
 **Recovery:** if the new revision misbehaves and it added **no**
 migrations, check out the old commit and run `/opt/pms/dc up -d web`; the
-old image is reused without a rebuild. If it **did** migrate, an old
+old image is reused, nothing is downloaded or built. Checking out a step 12
+commit also restores its older Compose file, which names its local
+`pms-web:<revision>` image. If it **did** migrate, an old
 image may not work with the new schema, and old code can't safely undo
 arbitrary migrations: restore the pre-update backup into the database
 instead (stop `web` first), or fix forward with a new commit.
@@ -435,9 +447,9 @@ workflow in `.github/workflows/ci.yml` on GitHub Actions.
 - each commit shows a green tick (passed) or a red cross (failed), and a
   pull request shows the same checks at the bottom.
 
-**What a run checks:** two jobs run in parallel, and the run passes only
-if both pass. Each runs the three checks in this order, stopping at the
-first failure:
+**What a run checks:** three jobs run in parallel, and the run passes only
+if all pass. The two test jobs run the three checks in this order,
+stopping at the first failure:
 
 1. migration drift (`makemigrations --check --dry-run`);
 2. the system check (`check`);
@@ -447,6 +459,20 @@ first failure:
 |---|---|---|
 | PostgreSQL (Docker Compose) | PostgreSQL 17 in the `db` service | builds the image, then `docker compose run --rm web python manage.py …` |
 | SQLite (Python 3.12) | SQLite | Python 3.12 on the runner, `pip install -r requirements.txt`, then `python manage.py …` |
+| Production image | PostgreSQL 17, throwaway | builds `Dockerfile.production`, runs it with `compose.server.yaml` (the server's file) and a throwaway env file, then checks: migrations apply, `check --deploy` shows exactly W004/W008/W012/W016, the login page answers 200, the app runs as UID 10001, the log has no `ERROR`, the image holds no secrets |
+
+**Publishing (step 13):** on a push to `main`, when all three jobs pass, a
+fourth job, *Publish the image*, pushes the very image the production job
+verified (it is handed over, never rebuilt) to GitHub Container Registry
+as `ghcr.io/amanshakya28515/pms-web:<7-character revision>`. Branches and
+pull requests build and verify the image but never publish it. Every
+commit on `main` gets a finished run; on other branches a newer push
+cancels the older run. The published revisions are listed on the
+repository page under **Packages → pms-web**.
+
+**One-time setting:** a package first published by a workflow is
+private. On GitHub open the package → Package settings → Change
+visibility → **Public**, so the server can pull without logging in.
 
 **Reproducing a failure locally:** open the failed run, find the red step,
 and run the same command yourself (PowerShell):
@@ -466,7 +492,9 @@ turn on a branch protection rule for `main` in the repository settings
 (Settings → Branches) and require both CI checks. That's a GitHub setting,
 not part of the code.
 
-**Versions are pinned:** the runner (`ubuntu-24.04`), the actions (`@v7`),
+**Versions are pinned:** the runner (`ubuntu-24.04`), the actions (major
+tags: `checkout`/`setup-python`/`upload-artifact` `@v7`,
+`download-artifact` `@v8`),
 the Python image (`python:3.12.16-slim-trixie`) and the PostgreSQL image
 (`postgres:17.11-trixie`). Updating one is a deliberate one-line change.
 
@@ -501,6 +529,26 @@ the Python image (`python:3.12.16-slim-trixie`) and the PostgreSQL image
   `ubuntu-latest` changes whenever upstream publishes a new release, so a
   run could fail, or pass, with no change in our code. Pinning makes every
   run reproducible; updating becomes a visible change in Git.
-- **Secrets:** this workflow needs none. It only reads the code
-  (`permissions: contents: read`), and the database values are the
-  development-only ones already in `compose.yaml`.
+- **Secrets:** this workflow stores none. Jobs only read the code
+  (`permissions: contents: read`). The production job generates throwaway
+  values on the runner, masked in the log. Only the publish job may write
+  packages, using the run's own short-lived `GITHUB_TOKEN`; GitHub gets no
+  access to the server.
+
+## Container registry concepts in plain language
+
+- **Registry:** a storage place for images, like GitHub for code. We use
+  GitHub Container Registry (`ghcr.io`), next to the repository.
+- **Image name and tag:** `ghcr.io/amanshakya28515/pms-web:<revision>`:
+  registry / owner / image name, then the tag after `:`. The tag is the
+  commit's revision, so every image says which code it holds. There's no
+  `latest` tag: the server always asks for an exact revision.
+- **Push / pull:** CI *pushes* (uploads) an image; the server *pulls*
+  (downloads) it. Public means anyone can pull, with no login; only this
+  repository's workflow can push.
+- **Build once, run everywhere:** the image the server runs is
+  byte-for-byte the one CI tested. Before step 13 the server built its own
+  image, which CI had never seen (step 12's stray-character bug, Q-82).
+- **Continuous delivery vs deployment:** CI now *delivers* a ready,
+  tested image; a person still decides when to *deploy* it (`dc pull`,
+  `migrate`, `up -d web`). Automatic deployment would be its own step.
