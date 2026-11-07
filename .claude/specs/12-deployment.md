@@ -1,7 +1,7 @@
 ---
 step: 12
 slug: deployment
-status: approved
+status: done
 created: 2026-10-31
 approved: 2026-10-31
 ---

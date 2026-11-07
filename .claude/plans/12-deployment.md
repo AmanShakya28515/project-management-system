@@ -2,7 +2,7 @@
 step: 12
 slug: deployment
 spec: .claude/specs/12-deployment.md
-status: built
+status: done
 created: 2026-10-31
 approved: 2026-10-31
 ---
@@ -341,5 +341,15 @@ future CI step.
     removed.
   - **Not re-run:** the test suite. Only the Gunicorn command line
     changed, no Python, settings or templates; 415/415 from step 9 stands.
-  - **Server:** to be rolled out through the documented update routine
-    once the fix commit passes CI.
+  - **Server rollout (user-run, user's choice at /done):** CI run
+    42042131630 passed on `bd25e63`. The update routine ran: a backup,
+    checkout `bd25e63`, build, migrate ("No migrations to apply"),
+    `up -d web`. `web` runs `pms-web:bd25e63`; the start log shows Gunicorn
+    26.2.0 listening with 2 workers booting; `logs web | grep -c ERROR`
+    → **0**; login page **200**.
+
+### 2026-11-05: closing (/done)
+- **Q-81:** fixed and deployed (`bd25e63`).
+- **Q-82:** deferred to the next CI/CD step (user's choice), in CLAUDE.md
+  Known limitations.
+- **Q-83, Q-84:** Low, accepted. Q-84 is noted in CLAUDE.md's pin rule.

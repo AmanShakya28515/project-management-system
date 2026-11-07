@@ -217,9 +217,10 @@ area changes.
 ### Do NOT add without being asked:
 - React, Vue, HTMX, Alpine, or any JS framework or bundler; Node/npm of any kind
 - Kubernetes manifests, or Docker or CI changes beyond the approved development
-  setup (step 08), CI workflow (step 10) and production image/local rehearsal
-  (step 11), e.g. extra services, extra CI jobs, image publishing or deployment.
-  Further infrastructure changes need their own step.
+  setup (step 08), CI workflow (step 10), production image/local rehearsal
+  (step 11) and the private server deployment (step 12), e.g. extra services,
+  extra CI jobs, image publishing, automatic deployment (CD), HTTPS/Nginx or
+  public exposure. Further infrastructure changes need their own step.
 - MySQL, Redis, Celery, or any message broker or cache server (PostgreSQL
   exists since step 09)
 - Django REST Framework or any API layer
@@ -287,11 +288,45 @@ plus the reasoning behind any structural choice.*
   Always use project `pms-production` and the explicit file/env-file commands
   in README: separate network/volume, no source mount, localhost port 8001,
   no database host port. Existing PostgreSQL pin, collation and TCP readiness
-  pattern apply. Keep pins aligned in both variants.
+  pattern apply. Keep pins aligned in every variant: `postgres:17.11-trixie`
+  is in `compose.yaml`, `compose.production.yaml` and `compose.server.yaml`;
+  the Python base is in both Dockerfiles (step 12 Q-84).
+- Gunicorn runs with `--no-control-socket`: the runtime user has no home
+  directory, and nothing uses Gunicorn 26's `gunicornc` socket (step 12
+  Q-81). Without it, every start logs an ERROR.
 - `.env.production.local` supplies generated runtime secrets and is ignored by
   Git and Docker. Never pass secrets into image builds. Migrations are explicit,
   never part of server startup. Production-image checks are local; existing CI
   still checks development PostgreSQL and host SQLite.
+
+### Server deployment (step 12)
+- **A private learning deployment on the user's shared Hostinger VPS**
+  (Ubuntu 24.04), which also runs 5–6 unrelated live sites. HTTP-only:
+  the app listens on the server's `127.0.0.1:8010` and is reached through
+  an SSH tunnel. It is not public (spec 12, OQ-3).
+- **The user runs every server command** over their own SSH session;
+  Claude never connects to the server. Give short copy-safe lines (long
+  ones wrap and break when copied), and never put the server's IP in the
+  repository (`<server-ip>` in docs).
+- **`compose.server.yaml`**, always run through the helper `/opt/pms/dc`
+  (project `pms`, `--env-file /etc/pms/production.env`, `PMS_REVISION`
+  from the checkout). It holds the step 11 image tagged
+  `pms-web:<revision>`, so the running revision is visible and older
+  images stay for recovery, plus `restart: unless-stopped`, 512 MB / 1 CPU
+  caps per service and logs capped at 3 × 10 MB, because the server is
+  shared. `db` has no ports; data is in the `pms_postgres-data` volume.
+- **Layout on the server:** `/opt/pms/app` (checkout of one CI-passed
+  revision, build input only, kept out of `/var/www` so nginx can never
+  serve it); `/etc/pms/production.env` (root-only secrets, generated on the
+  server); `/opt/pms/backups/` (root-only `pg_dump -Fc` files).
+- **Manual update routine** (README): CI green → back up → `git checkout
+  --detach <commit>` → build → explicit `migrate` → `up -d web` → check.
+  Downtime was about 2.5 s. An old image can't undo migrations; recovery
+  after a migration is a restore from the pre-update backup.
+- **Never on this server:** `down -v`, `docker system prune`, `volume
+  prune`, or any command not scoped to project `pms`. Docker was installed
+  for this step (`docker.io` + `docker-compose-v2`, after a snapshot); it
+  coexists with UFW because published ports are loopback-only.
 
 ### PostgreSQL (step 09)
 - **`db` service:** `postgres:17.11-trixie`. The major version fixes the
@@ -644,7 +679,8 @@ plus the reasoning behind any structural choice.*
 - **SQLite ignores letter case for ASCII letters only** (see Stack
   constraints). This now affects only the host `.venv` workflow.
   PostgreSQL in Compose folds all Unicode letters.
-- **S-2, remaining public-deployment work (step 11 boundary):** production
+- **S-2, remaining public-deployment work (step 11 boundary, still open
+  after step 12's private deployment):** production
   settings now reject fallback/weak secrets and debug enablement. HTTPS and
   secure-cookie configuration still need the actual deployment design:
   `check --deploy` reports W004 (HSTS), W008 (HTTPS redirect), W012 (secure
@@ -728,6 +764,17 @@ plus the reasoning behind any structural choice.*
   pushes to `main` leave the older commit's run cancelled, with no result.
   Fine for CI alone. The deployment step must decide whether every `main`
   commit needs a finished run (e.g. cancel only on other branches).
+  Step 12 deploys by hand only after checking that the chosen commit's run
+  passed, so this matters again only when automatic CD arrives.
+
+- **CI doesn't build the production image (step 12 Q-82, deferred to the
+  next CI/CD step):** a stray character in `Dockerfile.production` passed
+  CI and broke only on the server. Add a CI step that builds
+  `Dockerfile.production`.
+
+- **After a server reboot (step 12 Q-83, accepted):** Docker restarts
+  both containers without waiting for the `db` health check, so the first
+  requests can fail for a few seconds. It recovers by itself.
 
 - **The admin add-user form still uses `__iexact` (step 09 Q-77,
   accepted):** Django's `UserAdmin` checks usernames with `UPPER()` on
@@ -798,6 +845,13 @@ plus the reasoning behind any structural choice.*
   rehearsal; development and CI unchanged. Four new tests (415 total), passing
   on host SQLite, development PostgreSQL and production PostgreSQL; HTTPS/static
   delivery remain for deployment.
+- **12 — Deployment:** the production app runs privately on the user's
+  shared VPS through `compose.server.yaml` (loopback port behind an SSH
+  tunnel, root-only server secrets, capped resources, revision-tagged
+  images). Persistence, a tested backup restore and a manual update
+  (about 2.5 s downtime) were demonstrated with every command run by the
+  user. CI was unchanged; it fixed a stray Dockerfile line and Gunicorn's
+  control-socket error. No new tests (415 in total).
 
 ---
 
