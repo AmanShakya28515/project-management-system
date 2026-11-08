@@ -218,9 +218,10 @@ area changes.
 - React, Vue, HTMX, Alpine, or any JS framework or bundler; Node/npm of any kind
 - Kubernetes manifests, or Docker or CI changes beyond the approved development
   setup (step 08), CI workflow (step 10), production image/local rehearsal
-  (step 11) and the private server deployment (step 12), e.g. extra services,
-  extra CI jobs, image publishing, automatic deployment (CD), HTTPS/Nginx or
-  public exposure. Further infrastructure changes need their own step.
+  (step 11), the private server deployment (step 12) and the production-image
+  CI job with GHCR publishing (step 13), e.g. extra services, further CI
+  jobs or registries, automatic deployment (CD), HTTPS/Nginx or public
+  exposure. Further infrastructure changes need their own step.
 - MySQL, Redis, Celery, or any message broker or cache server (PostgreSQL
   exists since step 09)
 - Django REST Framework or any API layer
@@ -296,8 +297,8 @@ plus the reasoning behind any structural choice.*
   Q-81). Without it, every start logs an ERROR.
 - `.env.production.local` supplies generated runtime secrets and is ignored by
   Git and Docker. Never pass secrets into image builds. Migrations are explicit,
-  never part of server startup. Production-image checks are local; existing CI
-  still checks development PostgreSQL and host SQLite.
+  never part of server startup. Since step 13, CI builds and verifies this
+  image on every push (see Continuous integration).
 
 ### Server deployment (step 12)
 - **A private learning deployment on the user's shared Hostinger VPS**
@@ -310,19 +311,23 @@ plus the reasoning behind any structural choice.*
   repository (`<server-ip>` in docs).
 - **`compose.server.yaml`**, always run through the helper `/opt/pms/dc`
   (project `pms`, `--env-file /etc/pms/production.env`, `PMS_REVISION`
-  from the checkout). It holds the step 11 image tagged
-  `pms-web:<revision>`, so the running revision is visible and older
-  images stay for recovery, plus `restart: unless-stopped`, 512 MB / 1 CPU
-  caps per service and logs capped at 3 × 10 MB, because the server is
+  from the checkout). Since step 13 it has **no `build:`**: it names the
+  CI-published `ghcr.io/amanshakya28515/pms-web:<revision>`, which the
+  server pulls, so a missing image fails loudly instead of being built,
+  untested, on the server. The tag shows the running revision and older
+  images stay for recovery (checking out a step 12 commit restores its own
+  Compose file and local `pms-web:<revision>` name). It also has
+  `restart: unless-stopped`, 512 MB / 1 CPU caps per service and logs capped at 3 × 10 MB, because the server is
   shared. `db` has no ports; data is in the `pms_postgres-data` volume.
 - **Layout on the server:** `/opt/pms/app` (checkout of one CI-passed
-  revision, build input only, kept out of `/var/www` so nginx can never
-  serve it); `/etc/pms/production.env` (root-only secrets, generated on the
+  revision: it supplies the Compose file and the revision to pull, kept
+  out of `/var/www` so nginx can never serve it); `/etc/pms/production.env` (root-only secrets, generated on the
   server); `/opt/pms/backups/` (root-only `pg_dump -Fc` files).
-- **Manual update routine** (README): CI green → back up → `git checkout
-  --detach <commit>` → build → explicit `migrate` → `up -d web` → check.
-  Downtime was about 2.5 s. An old image can't undo migrations; recovery
-  after a migration is a restore from the pre-update backup.
+- **Manual update routine** (README, continuous delivery, not deployment):
+  CI green on `main` → back up → `git checkout --detach <commit>` →
+  `dc pull web` → explicit `migrate` → `up -d web` → check. Never build on
+  the server. Downtime is a few seconds (2.6 s in step 13). An old image
+  can't undo migrations; recovery after a migration is a restore from the pre-update backup.
 - **Never on this server:** `down -v`, `docker system prune`, `volume
   prune`, or any command not scoped to project `pms`. Docker was installed
   for this step (`docker.io` + `docker-compose-v2`, after a snapshot); it
@@ -371,21 +376,38 @@ plus the reasoning behind any structural choice.*
 
 ### Continuous integration (step 10)
 - **GitHub Actions, one workflow** (`.github/workflows/ci.yml`). It runs on
-  a push to any branch and on pull requests into `main`. A newer push
-  cancels the older run on the same branch.
-- **Two parallel jobs, both required:**
+  a push to any branch and on pull requests into `main`. On other
+  branches a newer push cancels the older run; on `main` every commit has
+  its own concurrency group, so every run finishes and can publish (step
+  13, Q-80 closed).
+- **Three parallel jobs, all required:**
   - `postgres` builds the dev image and runs each check with
     `docker compose run --rm web …`, so CI tests the real `Dockerfile` and
     `compose.yaml`. `run` waits for the `db` health check and starts no dev
     server.
   - `sqlite` runs Python 3.12 on the runner, with no `DJANGO_DB_*` set, as
     in the host `.venv`.
+  - `production` (step 13) builds `Dockerfile.production` under its
+    registry name and runs it with **`compose.server.yaml` itself** and a
+    throwaway, masked env file, so CI tests the exact image and Compose
+    file the server uses. It checks: migrations; `check --deploy` gives
+    exactly W004/W008/W012/W016; login 200; UID 10001; no `ERROR` in the
+    log; no secret names in the metadata and no `.env*` in `/app`. A
+    broken production recipe turns the run red (Q-82 closed, demonstrated).
+- **Publishing (step 13):** on a push to `main` only, `production` saves the
+  verified image as a one-day artifact, and `publish` (`needs` all three
+  jobs) loads it and pushes it to GHCR as `:<7-char revision>`. It never
+  rebuilds, because a rebuild would be a different, untested image. There
+  is no `latest` tag. Only `publish` has `packages: write`, logging in with
+  the run's `GITHUB_TOKEN` via stdin. The package is public (it took the
+  public repository's visibility), so the server pulls without credentials.
+  GitHub gets no access to the server.
 - **Each check is its own step**, in the standard order (drift, `check`,
   `test --noinput`), so a failure stops the job and the log names the step.
   `--noinput` stops a non-interactive run from hanging on a prompt.
-- **No secrets, read-only:** `permissions: contents: read`; the only
-  database values are the dev-only ones in `compose.yaml`. Each job has a
-  15-minute limit.
+- **No stored secrets:** the default is `permissions: contents: read`; the
+  only fixed database values are the dev-only ones in `compose.yaml`. Each
+  job has a 15-minute limit.
 - **Everything external is pinned** (plan 10, D-1/D-2): the runner
   (`ubuntu-24.04`), the actions (major tags), the Python and PostgreSQL
   images (exact version plus Debian release, so glibc's case tables for
@@ -760,17 +782,16 @@ plus the reasoning behind any structural choice.*
   authentication error. Remove the duplication in the step that moves
   credentials out of `compose.yaml` (e.g. a git-ignored `.env`).
 
-- **CI cancels superseded runs on `main` too (step 10 Q-80):** two quick
-  pushes to `main` leave the older commit's run cancelled, with no result.
-  Fine for CI alone. The deployment step must decide whether every `main`
-  commit needs a finished run (e.g. cancel only on other branches).
-  Step 12 deploys by hand only after checking that the chosen commit's run
-  passed, so this matters again only when automatic CD arrives.
+- **Published tags can be overwritten (step 13 Q-85, accepted):**
+  "Re-run all jobs" on an already published `main` commit rebuilds the
+  image (dependencies float within `~=`) and pushes it over the same
+  `:<rev>` tag. Re-run only the failed jobs. A lock file or digest-based
+  deploys would end this, in their own step.
 
-- **CI doesn't build the production image (step 12 Q-82, deferred to the
-  next CI/CD step):** a stray character in `Dockerfile.production` passed
-  CI and broke only on the server. Add a CI step that builds
-  `Dockerfile.production`.
+- **Old images pile up on the server (step 13 Q-86, accepted):** about
+  250 MB per deployed revision. Never `prune` on the shared server; when
+  disk matters, remove specific old tags (`docker image rm <name:tag>`),
+  keeping the previous revision for recovery.
 
 - **After a server reboot (step 12 Q-83, accepted):** Docker restarts
   both containers without waiting for the `db` health check, so the first
@@ -852,6 +873,13 @@ plus the reasoning behind any structural choice.*
   (about 2.5 s downtime) were demonstrated with every command run by the
   user. CI was unchanged; it fixed a stray Dockerfile line and Gunicorn's
   control-socket error. No new tests (415 in total).
+- **13 — CI/CD: build once, publish, pull:** CI builds the production image
+  and verifies it with the server's own Compose file on every push. On
+  `main` it publishes that exact image to GHCR, and the server now updates
+  with `dc pull` instead of building (continuous delivery; the server is
+  still updated by hand). Every `main` commit gets a finished run (Q-80),
+  and a broken production recipe turns CI red (Q-82, shown with a demo
+  branch). No new tests (415 in total).
 
 ---
 

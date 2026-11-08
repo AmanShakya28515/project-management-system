@@ -1,7 +1,7 @@
 ---
 step: 13
 slug: cicd
-status: approved
+status: done
 created: 2026-11-07
 approved: 2026-11-07
 ---

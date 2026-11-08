@@ -2,7 +2,7 @@
 step: 13
 slug: cicd
 spec: .claude/specs/13-cicd.md
-status: approved
+status: done
 created: 2026-11-07
 approved: 2026-11-07
 ---
@@ -108,17 +108,17 @@ None.
   the `production` job's checks locally against `compose.server.yaml`;
   `docker compose -f compose.server.yaml config --quiet` with dummy
   values.
-- [ ] 7. **Commit and push** (only when the user asks); watch the run on
+- [x] 7. **Commit and push** (only when the user asks); watch the run on
   `main`: four jobs green, `publish` pushes the image.
-- [ ] 8. **One-time GitHub setting (user):** the package `pms-web` →
+- [x] 8. **One-time GitHub setting (user):** the package `pms-web` →
   Package settings → Change visibility → **Public**. Then check from the
   PC, logged out of ghcr.io: `docker pull ghcr.io/amanshakya28515/pms-web:<rev>`
   works (AC-6).
-- [ ] 9. **Failure demo (AC-1, AC-5):** a throwaway branch with a broken
+- [x] 9. **Failure demo (AC-1, AC-5):** a throwaway branch with a broken
   line in `Dockerfile.production` → `production` is red and `publish`
   doesn't run (it also never runs on a branch). Delete the branch
   afterwards (local and remote).
-- [ ] 10. **Server rollout (user-run, short batches):** back up → `git fetch`
+- [x] 10. **Server rollout (user-run, short batches):** back up → `git fetch`
   → `git checkout --detach <rev>` → `/opt/pms/dc pull web` →
   `migrate --noinput` → `up -d web` → `ps`, logs, tunnel. Confirm the
   running image is `ghcr.io/…:<rev>` and that nothing was built. The old
@@ -201,9 +201,61 @@ is the CI run itself, a local rehearsal and the user-run server checks.
   **10001**; no `ERROR` in the log; no secret names in inspect/history;
   no `.env*`/`*.local` in `/app`. Cleaned up with `down -v` (project
   `pms13ci` only) and the test image removed.
-- **Pending (needs a push and the user):** step 7 (CI on GitHub, publish),
-  step 8 (package → Public, anonymous pull), step 9 (failure demo),
-  step 10 (server rollout).
+- **Step 7:** commit `0b0d976` pushed to `main`; CI run 42386988247:
+  PostgreSQL, SQLite, Production image and Publish the image all
+  **success**.
+- **Step 8:** without any login, the GHCR token endpoint plus
+  `GET /v2/amanshakya28515/pms-web/manifests/0b0d976` returned **200**:
+  the image is already anonymously pullable (it seems to have taken the
+  public repository's visibility), so no manual visibility change was
+  needed. A PC `docker pull` wasn't run; the manifest check is the same
+  registry request.
+- **Step 10, server rollout (2026-11-08, user-run, output pasted):**
+  checkout `0b0d976`; `dc pull web` pulled 5 layers in 6.4 s with no
+  build; images: `ghcr.io/amanshakya28515/pms-web:0b0d976` (241 MB, new)
+  next to `pms-web:bd25e63`/`bc7c504`/`7a7006a` (271 MB, kept);
+  `migrate`: "No migrations to apply"; `up -d web`: db Healthy, web
+  Started in 2.6 s; `ps`: `pms-web-1` on `ghcr.io/…:0b0d976`, port
+  `127.0.0.1:8010->8000/tcp`; `pms-db-1` up 2 days (healthy, data
+  volume untouched); start log: five Gunicorn INFO lines, no ERROR.
+  *Not pasted:* the backup output, the `curl` code, the tunnel check.
+- **Step 9, failure demo (2026-11-08):** branch
+  `demo/13-broken-dockerfile`, commit `92b3379` appending the same stray
+  `r` line as step 12. Run 42466158123: **failure**. Production image
+  failed at "Build the production image"; PostgreSQL and SQLite passed
+  (they don't use that file); Publish the image **skipped**. GHCR has no
+  `:92b3379` (manifest 404). Branch deleted locally and on GitHub; `main`
+  untouched (no `r` line). Q-82 is closed by this.
+- All implementation steps done; status `built`.
 
 ## Review log
-_(filled in by /review)_
+
+### 2026-11-08: review of the build
+Scope: `57c2da5..0b0d976` (`ci.yml`, `compose.server.yaml`,
+`.dockerignore`, `README.md`) plus the recorded CI, demo and server runs.
+All 11 ACs are met, with evidence in Test results. Checked with no
+finding:
+- **Permissions:** only `publish` has `packages: write`; the token goes
+  through an env var and stdin; no stored secrets; no server access.
+- **The publish gate:** `if` plus the implicit `success()` on all three
+  `needs`; PR events never publish.
+- **Concurrency:** grouped per SHA on `main`, so runs aren't cancelled.
+- **Throwaway secrets:** masked before use, written outside the
+  workspace, never echoed.
+- **Shell behaviour:** default `bash -e` without `pipefail`, so
+  `logs | grep -q` and `save | gzip` behave as intended. A failed save
+  leads to a failed `docker load` and nothing is published (fail-closed).
+- **Server file:** no `build:` (fail loud); step 12 recovery keeps working
+  through each commit's own Compose file.
+
+| ID | Sev | Where | Finding | Suggested fix |
+|---|---|---|---|---|
+| Q-85 | Low | `.github/workflows/ci.yml:211` (`publish`) | Tags can be overwritten. Re-running the *whole* workflow for a `main` commit rebuilds the image (dependencies float within `~=`) and pushes it under the same `:<rev>` tag, replacing what the server may already run. Re-running only `publish` reuses the artifact and is safe. | Accept. Note in the README: re-run only failed jobs, never "Re-run all jobs" on an already published `main` commit. A lock file or digest-based deploys would remove it for good (their own step). `open` |
+| Q-86 | Low | README "Updating to a new revision" | Old images pile up on the shared server (about 240–270 MB per revision, 4 kept today), and the README gives no safe clean-up command. `docker image prune`/`system prune` are rightly forbidden. | Accept for now. When disk matters, remove specific old tags only (`docker image rm pms-web:7a7006a`), keeping the previous revision for recovery. `open` |
+
+No High or Medium findings. Status → `reviewed`.
+
+### 2026-11-08: closed
+Q-85 and Q-86 were accepted (Low, by default) and recorded in CLAUDE.md
+Known limitations. Q-80 and Q-82 are closed and removed from there. No code
+changed after the 415/415 run, so the suite wasn't re-run.
