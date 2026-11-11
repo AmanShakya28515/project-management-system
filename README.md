@@ -348,6 +348,101 @@ instead (stop `web` first), or fix forward with a new commit.
 `/etc/pms`. Delete the database too only on purpose: `docker volume rm
 pms_postgres-data`.
 
+## Monitoring (step 14)
+
+A separate Compose project, `pms-monitoring` (`compose.monitoring.yaml`),
+runs next to the app on the server and shows its health in **Grafana**.
+It's private like the app: every port is on the server's loopback, and
+Grafana is opened through the SSH tunnel. It changes nothing in the app,
+and it can be started, stopped or removed without touching the app.
+
+| Component | What it does | Memory cap |
+|---|---|---|
+| **Alloy** (collector) | Every 15 s: server CPU/memory/disk, the app's container CPU/memory, an "is the login page up?" probe; plus the app's and database's logs | 160 MB |
+| **Prometheus** | Stores the numbers (metrics) for 15 days, at most 1 GB | 192 MB |
+| **Loki** | Stores the logs for 7 days | 192 MB |
+| **Grafana** | Dashboards, login required | 384 MB |
+
+Only Compose project `pms` is collected (its logs and its two containers);
+the server totals cover the whole VPS. This Alloy is our own container on
+`127.0.0.1:12346`: the server's existing Alloy service is not touched.
+Ports used: Grafana `127.0.0.1:3010`, Prometheus `127.0.0.1:9095`, Loki
+`127.0.0.1:3110`.
+
+### First-time setup (root on the server)
+Check the ports are free first: `ss -ltn | grep -E ':(3010|3110|9095|12346) '`
+should print nothing.
+
+**Grafana password** (generated on the server, never printed):
+
+```bash
+umask 077; F=/etc/pms/monitoring.env
+P=$(openssl rand -base64 24 | tr -d '\n')
+printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$P" > $F
+unset P; umask 022; ls -l $F
+```
+
+Read it when you need it with `cat /etc/pms/monitoring.env` (never paste
+it anywhere). It's used only on Grafana's **first** start. To change it
+later: `/opt/pms/mon exec grafana grafana cli admin reset-admin-password '<new>'`.
+
+**Helper** `/opt/pms/mon` (like `dc`, scoped to project `pms-monitoring`):
+
+```bash
+F=/opt/pms/mon
+printf '#!/bin/sh\ncd /opt/pms/app || exit 1\n' > $F
+printf 'C="-p pms-monitoring -f compose.monitoring.yaml"\n' >> $F
+printf 'E="--env-file /etc/pms/monitoring.env"\n' >> $F
+printf 'exec docker compose $C $E "$@"\n' >> $F
+chmod 700 $F
+```
+
+**Start:** `/opt/pms/mon pull` then `/opt/pms/mon up -d`.
+
+### Everyday operation
+| Task | Command |
+|---|---|
+| Status | `/opt/pms/mon ps` |
+| Logs of one component | `/opt/pms/mon logs --tail 50 grafana` (or `alloy`, `loki`, `prometheus`) |
+| Resource use | `docker stats --no-stream` (the `pms-monitoring-*` rows) |
+| Stop / start (data kept) | `/opt/pms/mon stop` / `/opt/pms/mon start` |
+| Apply a changed configuration | `/opt/pms/mon up -d` |
+| Update to new pinned versions | check out the new commit, then `/opt/pms/mon pull` and `/opt/pms/mon up -d` |
+| Remove containers, keep data | `/opt/pms/mon down` |
+| Remove everything incl. history | `/opt/pms/mon down -v` (deletes **only** monitoring data, never the app's) |
+
+The app's `dc` commands and update routine are unchanged. Both projects use
+the same checkout `/opt/pms/app`: if you check out a commit from before step
+14 (to recover the app), `mon` commands fail until you check out a step 14+
+commit again. The running monitoring containers keep running meanwhile.
+
+### Open Grafana
+Add Grafana's port to the tunnel (PowerShell on your PC):
+
+```powershell
+ssh -N -L 8010:127.0.0.1:8010 -L 3010:127.0.0.1:3010 root@<server-ip>
+```
+
+Browse to <http://localhost:3010/>, log in as `admin`, and open
+**Dashboards → PMS → PMS monitoring**.
+
+| Row | Panel | How to read it |
+|---|---|---|
+| Uptime | App status, Up / down over time | Green UP = the login page answered 200 within 5 s (checked every 15 s); red DOWN shows within about a minute |
+| Uptime | Login page response time | Normally a few milliseconds; rising values mean the app is struggling |
+| Containers | CPU | Cores used by `pms-web-1` / `pms-db-1` (each capped at 1.0) |
+| Containers | Memory | Use against the dashed 512 MB limit line; near the line means risk of being killed |
+| Server | CPU, memory, disk, load | The whole VPS, all sites together: is there room left? |
+| Logs | Logs | Pick a service (web/db) and type in **Search logs**; e.g. `GET /accounts` or `error` |
+
+Dashboards and data sources come from `monitoring/grafana/` in the
+repository: changes made in the browser can't be saved. Edit the files and
+run `/opt/pms/mon up -d` instead.
+
+**Never on the shared server:** `docker system prune`, `volume prune`, or
+anything not scoped to `pms-monitoring`/`pms`. `mon down -v` is safe only
+because it is scoped to the monitoring project.
+
 ## Docker concepts in plain language
 
 - **Image:** a read-only package holding everything the app needs: a small
@@ -552,3 +647,24 @@ the Python image (`python:3.12.16-slim-trixie`) and the PostgreSQL image
 - **Continuous delivery vs deployment:** CI now *delivers* a ready,
   tested image; a person still decides when to *deploy* it (`dc pull`,
   `migrate`, `up -d web`). Automatic deployment would be its own step.
+
+## Monitoring concepts in plain language
+
+- **Metrics:** numbers measured over time, such as "CPU used" every 15
+  seconds. Stored in Prometheus and drawn as graphs.
+- **Logs:** the text lines a program prints. Stored in Loki, searched in
+  Grafana. Metrics tell you *that* something is wrong; logs tell you *why*.
+- **Collector / scraping:** a program that reads the measurements at a fixed
+  interval ("scrapes" them) and sends them on. Here that is Alloy.
+- **Exporter:** a small piece that turns something (the server, a container,
+  a web page) into metrics. Alloy has built-in exporters for the server
+  (node-exporter), containers (cAdvisor) and probes (blackbox).
+- **Probe:** an outside check that does what a user would do, here
+  requesting the login page, and records whether it worked and how fast.
+- **Retention:** how long data is kept before it's deleted (15 days of
+  metrics, 7 of logs), so storage can't grow forever on a shared disk.
+- **Dashboard:** a page of panels (graphs, status tiles, log views). Ours is
+  defined as JSON in the repository ("dashboards as code"), so it comes
+  back exactly the same on a fresh install.
+- **Data source:** where Grafana reads data from (Prometheus for metrics,
+  Loki for logs).

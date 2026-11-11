@@ -1,0 +1,5 @@
+# Prometheus (step 14) is only a store: Alloy pushes metrics to it through
+# remote write, so there are no scrape jobs here. Retention is set by
+# command-line flags in compose.monitoring.yaml (15 days, at most 1 GB).
+global:
+  evaluation_interval: 1m

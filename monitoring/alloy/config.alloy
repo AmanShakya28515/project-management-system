@@ -1,0 +1,110 @@
+// Grafana Alloy collector (step 14). Runs on the host network.
+// Metrics go to Prometheus (remote write), logs go to Loki. Only the app's
+// Compose project "pms" is collected, apart from server-wide totals.
+
+// ---- Metrics -------------------------------------------------------------
+
+// Whole-server CPU, memory, load, disk and network (node-exporter).
+prometheus.exporter.unix "host" {
+  procfs_path    = "/host/proc"
+  sysfs_path     = "/sys"
+  rootfs_path    = "/host/root"
+  set_collectors = ["cpu", "meminfo", "loadavg", "filesystem", "diskstats", "netdev"]
+
+  filesystem {
+    fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$"
+    mount_points_exclude = "^/(dev|proc|run|sys|var/lib/docker/.+)($|/)"
+  }
+}
+
+// Per-container CPU and memory (cAdvisor), kept to the app's containers.
+prometheus.exporter.cadvisor "containers" {
+  docker_host            = "unix:///var/run/docker.sock"
+  docker_only            = true
+  store_container_labels = false
+  enabled_metrics        = ["cpu", "memory"]
+}
+
+// Is the login page up, and how fast does it answer?
+prometheus.exporter.blackbox "app" {
+  config = "{ modules: { http_2xx: { prober: http, timeout: 5s, http: { valid_status_codes: [200], no_follow_redirects: true, preferred_ip_protocol: ip4 } } } }"
+
+  target {
+    name    = "pms_login"
+    address = "http://127.0.0.1:8010/accounts/login/"
+    module  = "http_2xx"
+  }
+}
+
+prometheus.scrape "host" {
+  targets         = prometheus.exporter.unix.host.targets
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.scrape "containers" {
+  targets         = prometheus.exporter.cadvisor.containers.targets
+  scrape_interval = "15s"
+  forward_to      = [prometheus.relabel.pms_only.receiver]
+}
+
+prometheus.relabel "pms_only" {
+  rule {
+    source_labels = ["name"]
+    regex         = "pms-(web|db)-1"
+    action        = "keep"
+  }
+  forward_to = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.scrape "probe" {
+  targets         = prometheus.exporter.blackbox.app.targets
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://127.0.0.1:9095/api/v1/write"
+  }
+}
+
+// ---- Logs ----------------------------------------------------------------
+
+// Only containers of Compose project "pms" (the app); never other sites.
+discovery.docker "pms" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=pms"]
+  }
+}
+
+discovery.relabel "pms" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "pms" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.pms.targets
+  relabel_rules = discovery.relabel.pms.rules
+  forward_to    = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:3110/loki/api/v1/push"
+  }
+}

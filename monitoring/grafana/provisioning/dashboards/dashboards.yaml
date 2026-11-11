@@ -1,0 +1,12 @@
+# Load the dashboards in monitoring/grafana/dashboards (step 14). They
+# can't be changed or deleted in the UI: edit the JSON in the repository.
+apiVersion: 1
+
+providers:
+  - name: pms
+    folder: PMS
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana-dashboards

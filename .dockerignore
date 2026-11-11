@@ -37,4 +37,6 @@ Dockerfile.production
 compose.yaml
 compose.production.yaml
 compose.server.yaml
+compose.monitoring.yaml
+monitoring/
 *.md

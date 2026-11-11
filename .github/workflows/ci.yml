@@ -4,6 +4,7 @@
 # per database, and build and verify the production image. On main only,
 # when all three jobs pass, publish that verified image to GitHub
 # Container Registry. Nothing here deploys: the server pulls by hand.
+# A separate job checks the monitoring stack (step 14).
 name: CI
 
 # Triggers: a push to any branch ('**' leaves out tags), and pull requests
@@ -205,6 +206,85 @@ jobs:
       - name: Remove containers and the CI database volume
         if: always() && env.DC != ''
         run: $DC down -v
+
+  # Monitoring (step 14): start the whole stack from compose.monitoring.yaml
+  # with a throwaway Grafana password and check it works, so a broken
+  # monitoring configuration is caught before it reaches the server. It
+  # doesn't gate publishing: the app image doesn't depend on it.
+  monitoring:
+    name: Monitoring stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Create a throwaway Grafana password
+        run: |
+          PASS=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))")
+          echo "::add-mask::$PASS"
+          printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$PASS" > "$RUNNER_TEMP/mon.env"
+          echo "GF_AUTH=admin:$PASS" >> "$GITHUB_ENV"
+          echo "MON=docker compose -p pms-monitoring -f compose.monitoring.yaml --env-file $RUNNER_TEMP/mon.env" >> "$GITHUB_ENV"
+
+      # Exact versions only: no "latest", no tag-less image.
+      - name: Validate the Compose file and pins
+        run: |
+          $MON config --quiet
+          $MON config --images
+          if $MON config --images | grep -vqE ':v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "An image isn't pinned to an exact version"; exit 1
+          fi
+
+      - name: Start the stack
+        run: $MON up -d
+
+      - name: Grafana is healthy and needs a login
+        run: |
+          for i in $(seq 60); do
+            curl -sf http://127.0.0.1:3010/api/health > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:3010/api/health
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3010/api/search)
+          echo "Anonymous /api/search: $CODE"
+          test "$CODE" = 401
+
+      - name: Data sources and dashboard are provisioned
+        run: |
+          G=http://127.0.0.1:3010/api
+          curl -sf -u "$GF_AUTH" $G/datasources/uid/pms-prometheus/health
+          echo
+          curl -sf -u "$GF_AUTH" $G/datasources/uid/pms-loki > /dev/null
+          curl -sf -u "$GF_AUTH" "$G/search?query=PMS" | grep -q '"title":"PMS monitoring"'
+
+      - name: Loki is ready
+        run: |
+          for i in $(seq 60); do
+            [ "$(curl -s http://127.0.0.1:3110/ready)" = ready ] && exit 0
+            sleep 2
+          done
+          curl -s http://127.0.0.1:3110/ready; exit 1
+
+      # Server metrics and the probe arrive from Alloy (the probe reports
+      # down here, because the app isn't running in this job).
+      - name: Prometheus receives Alloy's metrics
+        run: |
+          Q=http://127.0.0.1:9095/api/v1/query?query=
+          has() { curl -s "$Q$1" | grep -q '"result":\[{'; }
+          for i in $(seq 60); do
+            has node_memory_MemTotal_bytes && has probe_success && exit 0
+            sleep 2
+          done
+          echo "Metrics didn't arrive"; exit 1
+
+      - name: Show the logs
+        if: failure()
+        run: $MON logs --tail 100
+
+      - name: Remove the stack and its CI volumes
+        if: always()
+        run: $MON down -v
 
   # Publish (step 13): only on main, only when all three jobs passed. It
   # pushes the very image the production job verified; it never rebuilds.
